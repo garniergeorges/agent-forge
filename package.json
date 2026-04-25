@@ -1,0 +1,44 @@
+{
+  "name": "@agent-forge/monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Forge, run, and orchestrate sandboxed LLM agents",
+  "license": "Apache-2.0",
+  "author": "Georges Garnier <@garniergeorges>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/garniergeorges/agent-forge"
+  },
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '*' build",
+    "test": "bun test",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "typecheck": "bun run --filter '*' typecheck",
+    "mockup": "node demo-sprites/forge-mockup-v3.mjs",
+    "hooks:install": "bash scripts/install-hooks.sh",
+    "prepare": "bash scripts/install-hooks.sh"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "keywords": [
+    "agent",
+    "llm",
+    "cli",
+    "docker",
+    "sandbox",
+    "anthropic",
+    "mcp",
+    "orchestration"
+  ]
+}

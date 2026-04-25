@@ -1,0 +1,131 @@
+name: Check commit attribution
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, master]
+
+jobs:
+  check-attribution:
+    name: Verify commit policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need full history to scan all PR commits
+          fetch-depth: 0
+
+      - name: Determine commit range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            # Push to main : check the commits being pushed
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.after }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Scan commits for forbidden attribution
+        run: |
+          set -e
+
+          BASE="${{ steps.range.outputs.base }}"
+          HEAD="${{ steps.range.outputs.head }}"
+
+          # Skip if base is all-zeros (initial push) — fall back to single HEAD scan
+          if [[ "$BASE" =~ ^0+$ ]]; then
+            COMMITS=$(git rev-list -1 "$HEAD")
+          else
+            COMMITS=$(git rev-list "$BASE..$HEAD")
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "::notice::No commits to scan."
+            exit 0
+          fi
+
+          # Forbidden patterns (must stay in sync with scripts/git-hooks/pre-commit)
+          PATTERNS=(
+            "Co-Authored-By:[[:space:]]*Claude"
+            "Co-Authored-By:[[:space:]]*claude"
+            "Generated with[[:space:]]*\[?Claude"
+            "🤖[[:space:]]*Generated with"
+            "claude\.ai/code"
+            "noreply@anthropic\.com"
+            "Anthropic PBC"
+            "claude-code"
+          )
+
+          VIOLATIONS=0
+
+          # ─── 1. Scan each commit message ────────────────────────────
+          for sha in $COMMITS; do
+            MSG=$(git log -1 --format=%B "$sha")
+            for pattern in "${PATTERNS[@]}"; do
+              if echo "$MSG" | grep -qE "$pattern"; then
+                echo "::error title=Forbidden attribution in commit message::Commit $sha contains pattern '$pattern'"
+                echo ""
+                echo "  commit: $sha"
+                echo "  pattern: $pattern"
+                echo "  message excerpt:"
+                echo "$MSG" | grep -E "$pattern" | head -2 | sed 's/^/    /'
+                echo ""
+                VIOLATIONS=$((VIOLATIONS + 1))
+              fi
+            done
+          done
+
+          # ─── 2. Scan diff content ──────────────────────────────────
+          # Files to exclude from scan
+          EXCLUDED='\.(png|gif|jpg|jpeg|webp|ico|pdf|lock)$|package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml|^assets/|^scripts/git-hooks/|^\.github/workflows/check-attribution\.yml'
+
+          if [[ "$BASE" =~ ^0+$ ]]; then
+            DIFF_RANGE="$HEAD"
+            CHANGED_FILES=$(git show --name-only --pretty=format: "$HEAD" | grep -vE "$EXCLUDED" || true)
+          else
+            DIFF_RANGE="$BASE..$HEAD"
+            CHANGED_FILES=$(git diff --name-only "$BASE" "$HEAD" | grep -vE "$EXCLUDED" || true)
+          fi
+
+          if [ -n "$CHANGED_FILES" ]; then
+            for file in $CHANGED_FILES; do
+              # File may have been deleted in HEAD
+              [ ! -f "$file" ] && continue
+
+              for pattern in "${PATTERNS[@]}"; do
+                if grep -qE "$pattern" "$file" 2>/dev/null; then
+                  echo "::error file=$file::Forbidden attribution pattern '$pattern' in file"
+                  echo ""
+                  echo "  file: $file"
+                  echo "  pattern: $pattern"
+                  echo "  matches:"
+                  grep -nE "$pattern" "$file" | head -3 | sed 's/^/    /'
+                  echo ""
+                  VIOLATIONS=$((VIOLATIONS + 1))
+                fi
+              done
+            done
+          fi
+
+          # ─── 3. Summary ─────────────────────────────────────────────
+          if [ "$VIOLATIONS" -gt 0 ]; then
+            echo ""
+            echo "::error::$VIOLATIONS commit policy violation(s) found."
+            echo ""
+            echo "This repository forbids auto-generated attribution markers."
+            echo "Please rewrite the offending commits / files and force-push."
+            echo ""
+            echo "To rewrite a commit message :"
+            echo "  git commit --amend                    # last commit"
+            echo "  git rebase -i <ref>                   # older commits"
+            echo ""
+            echo "See CONTRIBUTING.md for details."
+            exit 1
+          fi
+
+          echo "::notice::All commits and files passed the attribution check."

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Agent Forge — pre-commit hook
+#
+# Blocks commits that contain unwanted attribution markers
+# (auto-generated signatures, tool fingerprints).
+#
+# Install : run `bun run hooks:install` from the repo root.
+
+set -e
+
+# ─── Configuration ─────────────────────────────────────────────────
+# Patterns interdits dans le message de commit ET dans les fichiers staged.
+# Regex POSIX étendues. Un seul match suffit pour bloquer.
+FORBIDDEN_PATTERNS=(
+  "Co-Authored-By:[[:space:]]*Claude"
+  "Co-Authored-By:[[:space:]]*claude"
+  "Generated with[[:space:]]*\[?Claude"
+  "🤖[[:space:]]*Generated with"
+  "claude\.ai/code"
+  "noreply@anthropic\.com"
+  "Anthropic PBC"
+  "claude-code"
+)
+
+# Couleurs
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+GREEN='\033[0;32m'
+GREY='\033[0;90m'
+RESET='\033[0m'
+
+# ─── 1. Vérifier le message de commit ──────────────────────────────
+# Le message est dans .git/COMMIT_EDITMSG au moment du pre-commit
+COMMIT_MSG_FILE=".git/COMMIT_EDITMSG"
+if [ -f "$COMMIT_MSG_FILE" ]; then
+  for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+    if grep -qE "$pattern" "$COMMIT_MSG_FILE" 2>/dev/null; then
+      echo -e "${RED}✗ pre-commit blocked${RESET}"
+      echo -e "${RED}  Forbidden pattern in commit message :${RESET} ${YELLOW}$pattern${RESET}"
+      echo ""
+      echo -e "${GREY}  Reason : the project policy prohibits auto-generated"
+      echo -e "  attribution markers in commits.${RESET}"
+      echo ""
+      echo -e "${GREY}  Edit your commit message and try again.${RESET}"
+      exit 1
+    fi
+  done
+fi
+
+# ─── 2. Vérifier les fichiers staged ──────────────────────────────
+# Récupère la liste des fichiers ajoutés/modifiés (pas supprimés)
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED_FILES" ]; then
+  exit 0  # rien à vérifier
+fi
+
+# Fichiers à exclure du scan (binaires, docs spécifiques, etc.)
+EXCLUDED_PATTERNS=(
+  "package-lock\.json"
+  "bun\.lock"
+  "yarn\.lock"
+  "pnpm-lock\.yaml"
+  "\.lock$"
+  "assets/"
+  "\.png$"
+  "\.gif$"
+  "\.jpg$"
+  "\.jpeg$"
+  "\.webp$"
+  "\.ico$"
+  "\.pdf$"
+  "scripts/git-hooks/"
+)
+
+is_excluded() {
+  local file="$1"
+  for excl in "${EXCLUDED_PATTERNS[@]}"; do
+    if echo "$file" | grep -qE "$excl"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+VIOLATIONS=0
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  if is_excluded "$file"; then continue; fi
+  [ ! -f "$file" ] && continue
+
+  for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+    # On scanne le contenu staged, pas le fichier sur disque
+    if git show ":$file" 2>/dev/null | grep -qE "$pattern"; then
+      echo -e "${RED}✗ pre-commit blocked${RESET}"
+      echo -e "${RED}  Forbidden pattern :${RESET} ${YELLOW}$pattern${RESET}"
+      echo -e "${RED}  In file :${RESET} ${YELLOW}$file${RESET}"
+      echo ""
+      git show ":$file" | grep -nE "$pattern" | head -3 | while read -r line; do
+        echo -e "${GREY}    $line${RESET}"
+      done
+      echo ""
+      VIOLATIONS=$((VIOLATIONS + 1))
+    fi
+  done
+done <<< "$STAGED_FILES"
+
+if [ "$VIOLATIONS" -gt 0 ]; then
+  echo -e "${RED}  $VIOLATIONS violation(s) found.${RESET}"
+  echo -e "${GREY}  Edit the offending files, re-stage, and try again.${RESET}"
+  echo ""
+  echo -e "${GREY}  To bypass this check (NOT recommended) :${RESET}"
+  echo -e "${GREY}    git commit --no-verify${RESET}"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ pre-commit passed${RESET}"
+exit 0

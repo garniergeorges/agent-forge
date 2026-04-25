@@ -1,0 +1,21 @@
+{
+  "name": "@agent-forge/tools-core",
+  "version": "0.0.0",
+  "description": "Native tools shared between builder and runtime (Bash, FileRead, FileEdit, FileWrite, Grep, Glob)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agent-forge/core": "workspace:*",
+    "zod": "^3.23.0"
+  }
+}

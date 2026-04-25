@@ -1,0 +1,96 @@
+# ─── Dependencies ──────────────────────────────────────────────────
+node_modules/
+.pnp/
+.pnp.js
+.pnpm-store/
+.yarn/
+
+# ─── Build outputs ─────────────────────────────────────────────────
+dist/
+build/
+out/
+*.tsbuildinfo
+.turbo/
+
+# ─── Bun ───────────────────────────────────────────────────────────
+.bun/
+
+# ─── Tests / coverage ──────────────────────────────────────────────
+coverage/
+*.lcov
+.nyc_output/
+.vitest-cache/
+
+# ─── IDEs / editors ────────────────────────────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Logs ──────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+bun-debug.log*
+
+# ─── Environment / secrets ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ─── Brainstorm / private design notes ────────────────────────────
+# Keep all session docs, decision rationale, and Claude Code config
+# out of the public repo. These are personal design artefacts.
+.brainstorm/
+
+# Symlinks pointing into .brainstorm/ (let Claude Code read them locally
+# without leaking them in the public repo).
+/CLAUDE.md
+/.claude
+
+# ─── Agent Forge specific ──────────────────────────────────────────
+# User-level Agent Forge data (when running locally)
+~/.agent-forge/
+
+# Project-level Agent Forge runtime data
+.agent-forge/
+!.agent-forge/.gitkeep
+
+# Workspace produced by agents (artefacts, generated code)
+workspace/
+reports/
+
+# Local team data
+.claude/agents.local/
+.claude/teams.local/
+
+# claude-presence DB (if mounted locally for tests)
+presence.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Docker
+.dockerignore.local
+
+# ─── Temp / cache ──────────────────────────────────────────────────
+tmp/
+temp/
+.cache/
+.parcel-cache/
+
+# ─── Misc ──────────────────────────────────────────────────────────
+*.tgz
+.eslintcache
+.stylelintcache
