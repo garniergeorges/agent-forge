@@ -1,37 +1,49 @@
-// Welcome screen: header, big question, suggestions, prompt, footer.
-// Mirrors screenWelcome() from demo-sprites/forge-mockup-v3.mjs.
+// Bottom-pinned interactive zone (the "welcome" block).
+//
+// Contains, top to bottom :
+//   - Header bar (▌▌ AGENT FORGE ▐▐ ...)
+//   - Either the welcome content (question + suggestions) when the chat is
+//     empty, or the scrollable transcript once the user has sent a message.
+//   - Separator + prompt input
+//   - Footer with keyboard hints
+//
+// The whole block stays glued to the bottom of the terminal. The splash
+// above stays put. The chat content area inside this block has a fixed
+// max height : older turns are clipped (visually) but kept in the LLM
+// context.
 
 import { Box, Text, useStdin } from 'ink'
 import TextInput from 'ink-text-input'
 import React, { useState } from 'react'
+import { FORGE_MODEL } from '@agent-forge/core/builder'
+import { useChatContext } from '../hooks/useChatContext.tsx'
 import { useT } from '../i18n/LanguageContext.tsx'
 import { C } from '../theme/colors.ts'
+import { ChatViewport } from './ChatViewport.tsx'
 import { Footer } from './Footer.tsx'
 import { Header } from './Header.tsx'
+import { WelcomeContent } from './WelcomeContent.tsx'
 
-const FORGE_MODEL =
-  process.env.FORGE_MODEL ?? 'mlx-community/Llama-3.2-3B-Instruct-4bit'
+const CHAT_MAX_HEIGHT = 18 // lines reserved for the transcript inside the bottom block
 
 function shortModel(name: string): string {
-  // "mlx-community/Llama-3.2-3B-Instruct-4bit" → "Llama-3.2-3B-Instruct-4bit"
   const slash = name.lastIndexOf('/')
   return slash >= 0 ? name.slice(slash + 1) : name
 }
 
-export function Welcome({
-  onSubmit,
-}: {
-  onSubmit: (prompt: string) => void
-}): React.JSX.Element {
+export function Welcome(): React.JSX.Element {
   const t = useT()
   const { isRawModeSupported } = useStdin()
   const [input, setInput] = useState('')
+  const { state, send, busy, scrollOffset } = useChatContext()
+
+  const hasMessages = state.messages.length > 0 || state.streaming !== null
 
   const handleSubmit = (value: string): void => {
     const trimmed = value.trim()
-    if (!trimmed) return
+    if (!trimmed || busy) return
     setInput('')
-    onSubmit(trimmed)
+    void send(trimmed)
   }
 
   return (
@@ -41,31 +53,19 @@ export function Welcome({
         info={`${t('welcomeHeaderInfo')} · model: ${shortModel(FORGE_MODEL)}`}
       />
 
-      <Box flexDirection="column" alignItems="center" marginTop={2}>
-        <Text color={C.orange} bold>
-          {t('welcomeTitle')}
-        </Text>
-        <Box marginTop={1}>
-          <Text color={C.greyLight}>{t('welcomeSubtitle')}</Text>
-        </Box>
+      {hasMessages ? (
+        <ChatViewport
+          messages={state.messages}
+          streaming={state.streaming}
+          error={state.error}
+          height={CHAT_MAX_HEIGHT}
+          scrollOffset={scrollOffset}
+        />
+      ) : (
+        <WelcomeContent />
+      )}
 
-        <Box flexDirection="column" marginTop={2}>
-          <Text color={C.greyLight} dimColor>
-            {t('welcomeSuggestion1')}
-          </Text>
-          <Text color={C.greyLight} dimColor>
-            {t('welcomeSuggestion2')}
-          </Text>
-          <Text color={C.greyLight} dimColor>
-            {t('welcomeSuggestion3')}
-          </Text>
-          <Text color={C.greyLight} dimColor>
-            {t('welcomeSuggestion4')}
-          </Text>
-        </Box>
-      </Box>
-
-      <Box flexDirection="column" marginTop={2}>
+      <Box flexDirection="column" marginTop={1}>
         <Text color={C.grey} dimColor>
           {' '}
           {'─'.repeat(Math.max(0, (process.stdout.columns ?? 80) - 2))}
@@ -77,7 +77,7 @@ export function Welcome({
               value={input}
               onChange={setInput}
               onSubmit={handleSubmit}
-              placeholder={t('welcomeInputPlaceholder')}
+              placeholder={busy ? '' : t('welcomeInputPlaceholder')}
             />
           ) : (
             <Text color={C.grey} dimColor>
@@ -89,11 +89,20 @@ export function Welcome({
 
       <Box marginTop={1}>
         <Footer
-          hints={[
-            { key: '[⏎]', label: t('welcomeHintSend') },
-            { key: '[/help]', label: t('welcomeHintCommands') },
-            { key: '[Ctrl+C]', label: t('welcomeHintExit') },
-          ]}
+          hints={
+            hasMessages
+              ? [
+                  { key: '[⏎]', label: t('welcomeHintSend') },
+                  { key: '[PgUp/PgDn]', label: 'scroll' },
+                  { key: '[Ctrl+E]', label: 'live' },
+                  { key: '[Ctrl+C]', label: t('welcomeHintExit') },
+                ]
+              : [
+                  { key: '[⏎]', label: t('welcomeHintSend') },
+                  { key: '[/help]', label: t('welcomeHintCommands') },
+                  { key: '[Ctrl+C]', label: t('welcomeHintExit') },
+                ]
+          }
           info={t('welcomeScreenInfo')}
         />
       </Box>
