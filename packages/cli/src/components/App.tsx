@@ -24,24 +24,32 @@ import { Welcome } from './Welcome.tsx'
 export function App(): React.JSX.Element {
   const { lang } = useLanguage()
   const { isRawModeSupported } = useStdin()
-  const { scrollUp, scrollDown, scrollToBottom } = useChatContext()
+  const { scrollUp, scrollDown, scrollToBottom, pending } = useChatContext()
   const rows = process.stdout.rows ?? 30
+  const cols = process.stdout.columns ?? 80
+  const hasPending = pending !== null
 
   useInput(
     (_, key) => {
       if (key.pageUp) scrollUp()
       else if (key.pageDown) scrollDown()
-      // Ink does not expose End directly, but Ctrl+E is the conventional
-      // alternative and works fine here.
       else if (key.ctrl && _ === 'e') scrollToBottom()
     },
     { isActive: isRawModeSupported && lang !== null },
   )
 
+  // When a permission dialog is active, drop the fixed height so the box
+  // can grow to fit the dialog without Ink clipping the bottom border.
+  // The terminal scrolls naturally instead — the splash leaves the viewport
+  // until the user answers, then the layout snaps back to its pinned form.
   return (
-    <Box flexDirection="column" height={rows}>
+    <Box
+      flexDirection="column"
+      height={hasPending ? undefined : rows}
+      width={cols}
+    >
       <Splash />
-      <Box flexGrow={1} />
+      {!hasPending ? <Box flexGrow={1} /> : null}
       {lang ? <Welcome /> : null}
     </Box>
   )

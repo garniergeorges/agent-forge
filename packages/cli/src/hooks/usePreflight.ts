@@ -29,7 +29,17 @@ async function checkDocker(): Promise<boolean> {
 async function checkLLM(): Promise<boolean> {
   try {
     const url = new URL('models', FORGE_BASE_URL.endsWith('/') ? FORGE_BASE_URL : `${FORGE_BASE_URL}/`)
-    const res = await fetch(url, { signal: AbortSignal.timeout(2000) })
+    const apiKey = process.env.FORGE_API_KEY
+    const headers: Record<string, string> = {}
+    // Cloud endpoints (Mistral, OpenAI, Anthropic, …) require auth even
+    // on /models. Local endpoints (MLX server) accept anything or no header.
+    if (apiKey && apiKey !== 'not-needed') {
+      headers.Authorization = `Bearer ${apiKey}`
+    }
+    const res = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(2500),
+    })
     return res.ok
   } catch {
     return false

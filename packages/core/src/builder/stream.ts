@@ -1,6 +1,11 @@
 // streamBuilder — call the builder LLM with the full message history and
 // stream back text chunks as they arrive. Reads the provider config live
 // so /provider and /model switches take effect on the next call.
+//
+// Note : we do NOT use Vercel AI SDK native tool-use because mlx_lm.server
+// (our default local backend) does not implement OpenAI tool_calls. Instead
+// the CLI parses fenced action blocks the builder emits in plain text. See
+// packages/cli/src/builder-actions.ts.
 
 import { streamText } from 'ai'
 import { getBuilderModel } from './provider.ts'
@@ -26,9 +31,9 @@ export async function* streamBuilder({
     model: getBuilderModel(),
     system: getBuilderSystemPrompt(lang),
     messages,
-    // Keep responses short by default — speeds up perceived latency. Long
-    // explanations should come from follow-up turns, not one giant message.
-    maxTokens: Number(process.env.FORGE_MAX_TOKENS ?? '384'),
+    // 512 leaves room for a full forge:write block (~300 tokens) plus a
+    // short intro sentence. Override via FORGE_MAX_TOKENS if needed.
+    maxTokens: Number(process.env.FORGE_MAX_TOKENS ?? '512'),
   })
 
   for await (const chunk of result.textStream) {

@@ -30,6 +30,12 @@ export const FileWriteInputSchema = z.object({
       'File path RELATIVE to the Agent Forge home directory (~/.agent-forge/). Example : "agents/haiku-writer/AGENT.md".',
     ),
   content: z.string().describe('Full file content to write.'),
+  overwrite: z
+    .boolean()
+    .optional()
+    .describe(
+      'Allow overwriting an existing file. Defaults to false. Should only be set true after explicit user confirmation.',
+    ),
 })
 
 export type FileWriteInput = z.infer<typeof FileWriteInputSchema>
@@ -76,7 +82,7 @@ export function executeFileWrite(input: FileWriteInput): FileWriteResult {
   const safe = resolveSafePath(input.path)
   if (!safe.ok) return safe
 
-  if (existsSync(safe.absolutePath)) {
+  if (existsSync(safe.absolutePath) && !input.overwrite) {
     return {
       ok: false,
       error: `file already exists : ${safe.absolutePath}. Refusing to overwrite.`,

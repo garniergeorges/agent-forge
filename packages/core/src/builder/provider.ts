@@ -27,12 +27,12 @@ function readConfig(): ProviderConfig {
     baseURL:
       override.baseURL ??
       process.env.FORGE_BASE_URL ??
-      'http://127.0.0.1:8080/v1',
+      'https://api.mistral.ai/v1',
     apiKey: override.apiKey ?? process.env.FORGE_API_KEY ?? 'not-needed',
     model:
       override.model ??
       process.env.FORGE_MODEL ??
-      'mlx-community/Mistral-Nemo-Instruct-2407-4bit',
+      'mistral-small-latest',
   }
 }
 
