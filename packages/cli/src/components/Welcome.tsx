@@ -12,12 +12,13 @@
 // max height : older turns are clipped (visually) but kept in the LLM
 // context.
 
-import { Box, Text, useStdin } from 'ink'
+import { Box, Text, useApp, useStdin } from 'ink'
 import TextInput from 'ink-text-input'
 import React, { useState } from 'react'
-import { FORGE_MODEL } from '@agent-forge/core/builder'
+import { getCurrentModelName } from '@agent-forge/core/builder'
+import { isCommand, runCommand } from '../commands.ts'
 import { useChatContext } from '../hooks/useChatContext.tsx'
-import { useT } from '../i18n/LanguageContext.tsx'
+import { useLanguage, useT } from '../i18n/LanguageContext.tsx'
 import { C } from '../theme/colors.ts'
 import { ChatViewport } from './ChatViewport.tsx'
 import { Footer } from './Footer.tsx'
@@ -33,9 +34,12 @@ function shortModel(name: string): string {
 
 export function Welcome(): React.JSX.Element {
   const t = useT()
+  const { lang, setLang } = useLanguage()
+  const { exit } = useApp()
   const { isRawModeSupported } = useStdin()
   const [input, setInput] = useState('')
-  const { state, send, busy, scrollOffset } = useChatContext()
+  const { state, send, addSystemMessage, clear, busy, scrollOffset } =
+    useChatContext()
 
   const hasMessages = state.messages.length > 0 || state.streaming !== null
 
@@ -43,6 +47,22 @@ export function Welcome(): React.JSX.Element {
     const trimmed = value.trim()
     if (!trimmed || busy) return
     setInput('')
+
+    if (isCommand(trimmed)) {
+      // Echo the command so the user sees what they typed.
+      addSystemMessage(trimmed)
+      const result = runCommand(trimmed, {
+        lang: lang ?? 'en',
+        setLang,
+        clearChat: clear,
+        exit,
+      })
+      for (const line of result.lines) {
+        addSystemMessage(line)
+      }
+      return
+    }
+
     void send(trimmed)
   }
 
@@ -50,7 +70,7 @@ export function Welcome(): React.JSX.Element {
     <Box flexDirection="column">
       <Header
         label={t('welcomeHeaderLabel')}
-        info={`${t('welcomeHeaderInfo')} · model: ${shortModel(FORGE_MODEL)}`}
+        info={`${t('welcomeHeaderInfo')} · model: ${shortModel(getCurrentModelName())}`}
       />
 
       {hasMessages ? (
@@ -95,12 +115,11 @@ export function Welcome(): React.JSX.Element {
                   { key: '[⏎]', label: t('welcomeHintSend') },
                   { key: '[PgUp/PgDn]', label: 'scroll' },
                   { key: '[Ctrl+E]', label: 'live' },
-                  { key: '[Ctrl+C]', label: t('welcomeHintExit') },
+                  { key: '[/help]', label: t('welcomeHintCommands') },
                 ]
               : [
                   { key: '[⏎]', label: t('welcomeHintSend') },
                   { key: '[/help]', label: t('welcomeHintCommands') },
-                  { key: '[Ctrl+C]', label: t('welcomeHintExit') },
                 ]
           }
           info={t('welcomeScreenInfo')}

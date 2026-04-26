@@ -1,8 +1,9 @@
 // streamBuilder — call the builder LLM with the full message history and
-// stream back text chunks as they arrive.
+// stream back text chunks as they arrive. Reads the provider config live
+// so /provider and /model switches take effect on the next call.
 
 import { streamText } from 'ai'
-import { builderModel } from './provider.ts'
+import { getBuilderModel } from './provider.ts'
 import { type BuilderLang, getBuilderSystemPrompt } from './system-prompt.ts'
 
 export type ChatRole = 'user' | 'assistant'
@@ -22,7 +23,7 @@ export async function* streamBuilder({
   lang,
 }: StreamBuilderArgs): AsyncGenerator<string, void, void> {
   const result = streamText({
-    model: builderModel,
+    model: getBuilderModel(),
     system: getBuilderSystemPrompt(lang),
     messages,
   })

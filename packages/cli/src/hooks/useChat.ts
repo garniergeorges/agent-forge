@@ -1,12 +1,18 @@
 // Conversation state and streaming wiring for the CLI.
-// Holds the message history, calls streamBuilder, appends chunks live.
-// Also owns the scroll offset for the chat viewport.
+// Holds the message history (incl. local system messages from slash commands),
+// calls streamBuilder, appends chunks live. Owns the scroll offset.
 
 import { type ChatMessage, streamBuilder } from '@agent-forge/core/builder'
 import { useCallback, useState } from 'react'
 import type { Lang } from '../config/store.ts'
 
-export type ChatTurn = ChatMessage & { id: string }
+export type TurnRole = 'user' | 'assistant' | 'system'
+
+export type ChatTurn = {
+  id: string
+  role: TurnRole
+  content: string
+}
 
 export type ChatState = {
   messages: ChatTurn[]
@@ -25,6 +31,8 @@ const nextId = (): string => {
 export function useChat(lang: Lang): {
   state: ChatState
   send: (prompt: string) => Promise<void>
+  addSystemMessage: (text: string) => void
+  clear: () => void
   busy: boolean
   scrollOffset: number
   scrollUp: () => void
@@ -52,6 +60,17 @@ export function useChat(lang: Lang): {
     setScrollOffset(0)
   }, [])
 
+  const addSystemMessage = useCallback((text: string) => {
+    const sysTurn: ChatTurn = { id: nextId(), role: 'system', content: text }
+    setScrollOffset(0)
+    setState((prev) => ({ ...prev, messages: [...prev.messages, sysTurn] }))
+  }, [])
+
+  const clear = useCallback(() => {
+    setScrollOffset(0)
+    setState({ messages: [], streaming: null, error: null })
+  }, [])
+
   const send = useCallback(
     async (prompt: string): Promise<void> => {
       const userTurn: ChatTurn = { id: nextId(), role: 'user', content: prompt }
@@ -67,9 +86,12 @@ export function useChat(lang: Lang): {
       setBusy(true)
 
       try {
-        // Snapshot history (without the empty assistant turn) for the API call.
+        // Snapshot history for the API call. System turns are local UI
+        // artifacts (slash command output) — never sent to the LLM.
         const history: ChatMessage[] = [
-          ...state.messages.map(({ role, content }) => ({ role, content })),
+          ...state.messages
+            .filter((m) => m.role !== 'system')
+            .map(({ role, content }) => ({ role: role as 'user' | 'assistant', content })),
           { role: 'user', content: prompt },
         ]
 
@@ -102,5 +124,15 @@ export function useChat(lang: Lang): {
     [state.messages, lang],
   )
 
-  return { state, send, busy, scrollOffset, scrollUp, scrollDown, scrollToBottom }
+  return {
+    state,
+    send,
+    addSystemMessage,
+    clear,
+    busy,
+    scrollOffset,
+    scrollUp,
+    scrollDown,
+    scrollToBottom,
+  }
 }

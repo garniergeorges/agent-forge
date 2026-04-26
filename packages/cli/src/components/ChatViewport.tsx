@@ -38,10 +38,22 @@ function wrap(content: string, usable: number): string[] {
 function turnToLines(turn: ChatTurn, columns: number): VisualLine[] {
   const usable = Math.max(20, columns - PREFIX_WIDTH - 2)
   const wrapped = wrap(turn.content, usable)
-  const isUser = turn.role === 'user'
-  const prefix = isUser ? ' ❯ ' : ' ▸ '
-  const prefixColor = isUser ? C.grey : C.orange
-  const textColor = isUser ? C.greyLight : C.white
+  let prefix: string
+  let prefixColor: string
+  let textColor: string
+  if (turn.role === 'user') {
+    prefix = ' ❯ '
+    prefixColor = C.grey
+    textColor = C.greyLight
+  } else if (turn.role === 'assistant') {
+    prefix = ' ▸ '
+    prefixColor = C.orange
+    textColor = C.white
+  } else {
+    prefix = ' · '
+    prefixColor = C.grey
+    textColor = C.grey
+  }
   return wrapped.map((line, i) => ({
     key: `${turn.id}-${i.toString()}`,
     prefix: i === 0 ? prefix : CONTINUATION,

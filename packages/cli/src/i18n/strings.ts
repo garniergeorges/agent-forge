@@ -28,6 +28,25 @@ export type StringKey =
   | 'welcomeHintExit'
   | 'welcomeScreenInfo'
   | 'welcomeRawModeDisabled'
+  | 'cmdHelpHeader'
+  | 'cmdHelpExit'
+  | 'cmdHelpClear'
+  | 'cmdHelpHelp'
+  | 'cmdHelpLang'
+  | 'cmdHelpModel'
+  | 'cmdHelpProvider'
+  | 'cmdLangChanged'
+  | 'cmdLangCurrent'
+  | 'cmdLangInvalid'
+  | 'cmdModelChanged'
+  | 'cmdModelCurrent'
+  | 'cmdModelMissing'
+  | 'cmdProviderChanged'
+  | 'cmdProviderCurrent'
+  | 'cmdProviderInvalid'
+  | 'cmdProviderNeedsKey'
+  | 'cmdUnknown'
+  | 'cmdCleared'
 
 const TABLE: Record<StringKey, Record<Lang, string>> = {
   splashTagline: {
@@ -125,6 +144,82 @@ const TABLE: Record<StringKey, Record<Lang, string>> = {
   welcomeRawModeDisabled: {
     en: '(input disabled : terminal does not support raw mode)',
     fr: "(saisie désactivée : le terminal ne supporte pas le mode raw)",
+  },
+  cmdHelpHeader: {
+    en: 'Available commands :',
+    fr: 'Commandes disponibles :',
+  },
+  cmdHelpExit: {
+    en: '/exit               close the session',
+    fr: '/exit               ferme la session',
+  },
+  cmdHelpClear: {
+    en: '/clear              clear the conversation',
+    fr: '/clear              vide la conversation',
+  },
+  cmdHelpHelp: {
+    en: '/help               show this list',
+    fr: '/help               affiche cette liste',
+  },
+  cmdHelpLang: {
+    en: '/lang [en|fr]       show or change the UI language',
+    fr: '/lang [en|fr]       affiche ou change la langue',
+  },
+  cmdHelpModel: {
+    en: '/model [<name>]     show or change the LLM model',
+    fr: '/model [<name>]     affiche ou change le modèle LLM',
+  },
+  cmdHelpProvider: {
+    en: '/provider [mlx|openai|anthropic|mistral]   show or switch the provider',
+    fr: '/provider [mlx|openai|anthropic|mistral]   affiche ou change le provider',
+  },
+  cmdLangChanged: {
+    en: 'Language changed.',
+    fr: 'Langue changée.',
+  },
+  cmdLangCurrent: {
+    en: 'Current language',
+    fr: 'Langue courante',
+  },
+  cmdLangInvalid: {
+    en: 'Unknown language. Use : en, fr.',
+    fr: 'Langue inconnue. Utilisez : en, fr.',
+  },
+  cmdModelChanged: {
+    en: 'Model changed for this session.',
+    fr: 'Modèle changé pour cette session.',
+  },
+  cmdModelCurrent: {
+    en: 'Current model',
+    fr: 'Modèle courant',
+  },
+  cmdModelMissing: {
+    en: 'Usage : /model <name>',
+    fr: 'Usage : /model <nom>',
+  },
+  cmdProviderChanged: {
+    en: 'Provider switched.',
+    fr: 'Provider changé.',
+  },
+  cmdProviderCurrent: {
+    en: 'Current provider',
+    fr: 'Provider courant',
+  },
+  cmdProviderInvalid: {
+    en: 'Unknown provider. Use : mlx, openai, anthropic, mistral.',
+    fr: 'Provider inconnu. Utilisez : mlx, openai, anthropic, mistral.',
+  },
+  cmdProviderNeedsKey: {
+    en: 'This provider needs FORGE_API_KEY to be set in your environment.',
+    fr: 'Ce provider nécessite la variable FORGE_API_KEY dans votre environnement.',
+  },
+  cmdUnknown: {
+    en: 'Unknown command. Type /help for the list.',
+    fr: 'Commande inconnue. Tapez /help pour la liste.',
+  },
+  cmdCleared: {
+    en: 'Conversation cleared.',
+    fr: 'Conversation vidée.',
   },
 }
 
