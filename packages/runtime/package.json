@@ -8,15 +8,16 @@
     "forge-runtime": "./dist/runtime.mjs"
   },
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "build": "bun build ./src/index.ts --outfile ./dist/runtime.mjs --target bun",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@agent-forge/core": "workspace:*",
     "@agent-forge/tools-core": "workspace:*",
-    "@anthropic-ai/sdk": "^0.32.0",
+    "@ai-sdk/openai": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "ai": "^4.0.0",
     "yaml": "^2.6.0"
   }
 }
