@@ -24,6 +24,9 @@ const PROMPT = 'Write a haiku about Docker'
 const IMAGE = 'agent-forge/base:latest'
 const RUNTIME_DIST = new URL('../../runtime/dist', import.meta.url).pathname
 const RUNTIME_BUNDLE = join(RUNTIME_DIST, 'runtime.mjs')
+const CONTAINER_NAME = `agent-forge-poc-${process.pid}`
+const TIMEOUT_MS = Number(process.env.FORGE_POC_TIMEOUT_MS ?? '60000')
+const RUNTIME_BASE_URL = process.env.FORGE_BASE_URL ?? 'http://host.docker.internal:8080/v1'
 
 function fail(message: string): never {
   process.stderr.write(`✗ ${message}\n`)
@@ -59,6 +62,11 @@ function preflight(): void {
   }
 }
 
+function forceRemoveContainer(): void {
+  // Best-effort sync cleanup. Used in signal handlers and on timeout.
+  spawnSync('docker', ['rm', '-f', CONTAINER_NAME], { stdio: 'ignore' })
+}
+
 async function main(): Promise<void> {
   preflight()
 
@@ -66,10 +74,12 @@ async function main(): Promise<void> {
     'run',
     '--rm',
     '-i',
+    '--name',
+    CONTAINER_NAME,
     '-v',
     `${RUNTIME_DIST}:/runtime:ro`,
     '-e',
-    'FORGE_BASE_URL=http://host.docker.internal:8080/v1',
+    `FORGE_BASE_URL=${RUNTIME_BASE_URL}`,
     IMAGE,
     'node',
     '/runtime/runtime.mjs',
@@ -79,30 +89,53 @@ async function main(): Promise<void> {
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 
-  const stdoutChunks: Buffer[] = []
-  const stderrChunks: Buffer[] = []
-  child.stdout.on('data', (c: Buffer) => stdoutChunks.push(c))
-  child.stderr.on('data', (c: Buffer) => stderrChunks.push(c))
-
-  child.stdin.write(PROMPT)
-  child.stdin.end()
-
-  const exitCode: number = await new Promise((res, rej) => {
-    child.on('error', rej)
-    child.on('close', (code) => res(code ?? 1))
-  })
-
-  const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
-  const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
-
-  if (stderr) {
-    process.stderr.write(`${stderr}\n`)
+  // Cleanup on Ctrl+C / SIGTERM. Also kill the child docker client.
+  const onSignal = (signal: NodeJS.Signals) => {
+    forceRemoveContainer()
+    child.kill('SIGTERM')
+    process.stderr.write(`\n✗ interrupted by ${signal}\n`)
+    process.exit(130) // 128 + SIGINT (2)
   }
-  if (stdout) {
-    process.stdout.write(`${stdout}\n`)
-  }
-  if (exitCode !== 0) {
-    process.exit(exitCode)
+  process.on('SIGINT', onSignal)
+  process.on('SIGTERM', onSignal)
+
+  // Hard timeout : kill the container if the runtime takes too long.
+  const timeout = setTimeout(() => {
+    forceRemoveContainer()
+    child.kill('SIGTERM')
+    process.stderr.write(`✗ runtime timeout after ${TIMEOUT_MS / 1000}s\n`)
+    process.exit(1)
+  }, TIMEOUT_MS)
+
+  try {
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
+    child.stdout.on('data', (c: Buffer) => stdoutChunks.push(c))
+    child.stderr.on('data', (c: Buffer) => stderrChunks.push(c))
+
+    child.stdin.write(PROMPT)
+    child.stdin.end()
+
+    const exitCode: number = await new Promise((res, rej) => {
+      child.on('error', rej)
+      child.on('close', (code) => res(code ?? 1))
+    })
+
+    const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
+    const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
+
+    if (stderr) {
+      process.stderr.write(`${stderr}\n`)
+    }
+    if (stdout) {
+      process.stdout.write(`${stdout}\n`)
+    }
+    if (exitCode !== 0) {
+      process.exit(exitCode)
+    }
+  } finally {
+    clearTimeout(timeout)
+    forceRemoveContainer()
   }
 }
 
