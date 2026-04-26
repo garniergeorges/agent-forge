@@ -1,22 +1,23 @@
 # @agent-forge/core
 
-Core primitives for Agent Forge.
+Primitives de base d'Agent Forge.
 
-## What's inside
+## Contenu (état P3)
 
-- **`builder/`** — the conversational LLM agent that designs other agents
-- **`docker/`** — Docker sandbox management (create, start, stop, mount, network)
-- **`tools/`** — Tool interface (`Tool<Input, Output, Progress>`)
-- **`types/`** — shared TypeScript types
+- **`builder/`** — l'agent LLM conversationnel qui conçoit les autres agents
+  - `provider.ts` — résout `FORGE_BASE_URL` / `FORGE_API_KEY` / `FORGE_MODEL`, supporte les overrides à chaud (`/provider`, `/model`)
+  - `system-prompt.ts` — prompt système bilingue EN/FR avec ACTION PROTOCOL et RUN PROTOCOL (fenced blocks `forge:write` et `forge:run`)
+  - `stream.ts` — `streamBuilder({ messages, lang })` via Vercel AI SDK
+- **`types/agent-md.ts`** — `parseAgentMd(text)` : sépare frontmatter / body, valide via Zod (name kebab-case, description non vide, sandbox.image, sandbox.timeout, maxTurns)
 
-## Status
+## À venir
 
-**Phase POC. Not implemented yet.** See `../../CLAUDE.md` and `../../SESSION-RECAP.md`.
+- **`docker/`** — abstraction sandbox (P5 : agents persistants via `docker exec`, pas seulement `run --rm`)
+- **`tools/`** — interface `Tool<Input, Output, Progress>` partagée (P4)
 
 ## Dependencies
 
-- `@anthropic-ai/sdk` — LLM provider
-- `@modelcontextprotocol/sdk` — MCP integration
-- `dockerode` — Docker control from Node
-- `zod` — schema validation
-- `yaml` — parsing AGENT.md / TEAM.md frontmatter
+- `ai`, `@ai-sdk/openai` — Vercel AI SDK pour les appels LLM provider-agnostic
+- `zod` — validation du frontmatter `AGENT.md`
+- `@modelcontextprotocol/sdk` — intégration MCP (P6+)
+- `yaml` — parsing du frontmatter
