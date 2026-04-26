@@ -23,7 +23,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── Non-root user ───────────────────────────────────────────────
-RUN useradd -m -s /bin/bash agent
+RUN useradd -m -s /bin/bash agent \
+    && mkdir -p /workspace \
+    && chown agent:agent /workspace
 USER agent
 WORKDIR /workspace
 
