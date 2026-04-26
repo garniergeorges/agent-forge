@@ -66,6 +66,9 @@
       },
     },
   },
+  "trustedDependencies": [
+    "@biomejs/biome",
+  ],
   "packages": {
     "@agent-forge/cli": ["@agent-forge/cli@workspace:packages/cli"],
 
