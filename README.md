@@ -7,7 +7,7 @@
   **Forge, run, and orchestrate sandboxed LLM agents.**
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-  ![Status: POC](https://img.shields.io/badge/status-POC-orange)
+  ![Status: P1 done](https://img.shields.io/badge/status-P1%20done-green)
   ![Stack: TypeScript + Bun](https://img.shields.io/badge/stack-TypeScript_+_Bun-3178c6)
 
   🇬🇧 English version · [🇫🇷 Version française](./README.fr.md)
@@ -16,7 +16,7 @@
 
 ---
 
-> 🚧 **Status — Design phase.** Architecture is complete, the interactive mockup is runnable. **No production code yet.** First runnable milestone (P1 — *Hello agent in Docker*) is the next deliverable. Star the repo to follow along.
+> 🚧 **Status — Early POC.** Architecture complete, interactive mockup runnable, **first milestone (P1 — *Hello agent in Docker*) lands : a host script orchestrates a Docker container running an LLM round-trip end-to-end.** Next milestone : P2 — Conversational CLI. Star the repo to follow along.
 
 ## What is Agent Forge ?
 
@@ -28,9 +28,9 @@ A conversational CLI that lets you **describe** a software project in natural la
 
 ## Status
 
-🚧 **Phase POC.** Active design phase. **No production code yet.**
+🚧 **Phase POC, P1 done.**
 
-A complete interactive mockup exists (`demo-sprites/`), and the architecture is fully scaffolded. The first runnable milestone (P1 — *Hello agent in Docker*) comes next.
+A complete interactive mockup exists (`demo-sprites/`), the architecture is fully scaffolded, and the first milestone (P1 — *Hello agent in Docker*) is runnable end-to-end : a host script spins up a Docker container, feeds it a prompt, and prints the LLM response. Next : P2 — Conversational CLI.
 
 ## Try the mockup
 
@@ -41,6 +41,82 @@ node demo-sprites/forge-mockup-v3.mjs
 Walks through the 7 screens of the product : splash, welcome, chat, mission control, focus, hangar, completion. **No real LLM calls** — scripted demo for UX validation.
 
 Press `SPACE` to advance, `B` to go back, `R` to restart.
+
+## Try P1 — *Hello agent in Docker*
+
+The first runnable milestone : a host script launches a Docker container, mounts a minimal Node runtime inside it, pipes a prompt through stdin, and prints the LLM response back.
+
+### Prerequisites
+
+- **Docker** running (Docker Desktop, OrbStack, or `colima`)
+- **Bun** ≥ 1.1 — `curl -fsSL https://bun.sh/install | bash`
+- **An OpenAI-compatible LLM endpoint reachable from the container.** The default points at a local [MLX](https://github.com/ml-explore/mlx) server, which is free to run on Apple Silicon Macs. Any other OpenAI-compatible endpoint (Ollama, OpenAI cloud, vLLM, …) works by overriding two env vars — see below.
+
+### Default path : local MLX server (Apple Silicon, free)
+
+```bash
+# 1. Install MLX-LM in an isolated venv (one-time)
+python3 -m venv ~/.agent-forge/mlx-venv
+~/.agent-forge/mlx-venv/bin/pip install mlx-lm
+
+# 2. Pull a small instruction-tuned model (~2 GB, one-time)
+~/.agent-forge/mlx-venv/bin/hf download mlx-community/Llama-3.2-3B-Instruct-4bit
+
+# 3. Start the MLX HTTP server (keep this running in a terminal)
+~/.agent-forge/mlx-venv/bin/mlx_lm.server \
+  --model mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --port 8080
+```
+
+In another terminal :
+
+```bash
+# 4. Build the base Docker image (one-time, ~600 MB, ~1 min)
+bash scripts/docker/build-base.sh
+
+# 5. Install JS deps and build the runtime bundle
+bun install
+cd packages/runtime && bun run build && cd -
+
+# 6. Run the round-trip
+bun run poc:p1
+```
+
+Expected output :
+
+```
+Containers at sea
+Docker's gentle guiding hand
+Freedom in the code
+```
+
+The container is removed automatically (`--rm`), even on Ctrl+C or timeout.
+
+### Alternative : OpenAI cloud (or any OpenAI-compatible endpoint)
+
+```bash
+FORGE_BASE_URL=https://api.openai.com/v1 \
+FORGE_API_KEY=sk-... \
+FORGE_MODEL=gpt-4o-mini \
+bun run poc:p1
+```
+
+Same script, different endpoint. The runtime is provider-agnostic via the [Vercel AI SDK](https://sdk.vercel.ai).
+
+### Troubleshooting
+
+The script runs three preflight checks and tells you exactly what to fix :
+
+```
+✗ Docker daemon is not reachable.
+  Start Docker Desktop (or `colima start`) and try again.
+
+✗ Image agent-forge/base:latest is not built locally.
+  Run: bash scripts/docker/build-base.sh
+
+✗ Runtime bundle missing: …/packages/runtime/dist/runtime.mjs
+  Run: cd packages/runtime && bun run build
+```
 
 ## Concept
 
