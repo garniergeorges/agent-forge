@@ -26,6 +26,9 @@ export async function* streamBuilder({
     model: getBuilderModel(),
     system: getBuilderSystemPrompt(lang),
     messages,
+    // Keep responses short by default — speeds up perceived latency. Long
+    // explanations should come from follow-up turns, not one giant message.
+    maxTokens: Number(process.env.FORGE_MAX_TOKENS ?? '384'),
   })
 
   for await (const chunk of result.textStream) {

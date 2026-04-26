@@ -32,7 +32,7 @@ function readConfig(): ProviderConfig {
     model:
       override.model ??
       process.env.FORGE_MODEL ??
-      'mlx-community/Llama-3.2-3B-Instruct-4bit',
+      'mlx-community/Mistral-Nemo-Instruct-2407-4bit',
   }
 }
 

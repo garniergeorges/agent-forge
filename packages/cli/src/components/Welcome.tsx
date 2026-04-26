@@ -29,7 +29,9 @@ const CHAT_MAX_HEIGHT = 18 // lines reserved for the transcript inside the botto
 
 function shortModel(name: string): string {
   const slash = name.lastIndexOf('/')
-  return slash >= 0 ? name.slice(slash + 1) : name
+  const base = slash >= 0 ? name.slice(slash + 1) : name
+  // Trim "-Instruct-NNNN-Xbit" tail noise so the header stays readable.
+  return base.length > 32 ? `${base.slice(0, 30)}…` : base
 }
 
 export function Welcome(): React.JSX.Element {

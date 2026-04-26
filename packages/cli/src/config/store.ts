@@ -44,7 +44,7 @@ export const PROVIDER_PRESETS: Record<
 > = {
   mlx: {
     baseURL: 'http://127.0.0.1:8080/v1',
-    defaultModel: 'mlx-community/Llama-3.2-3B-Instruct-4bit',
+    defaultModel: 'mlx-community/Mistral-Nemo-Instruct-2407-4bit',
     needsKey: false,
   },
   openai: {

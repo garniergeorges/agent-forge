@@ -12,7 +12,7 @@ import { generateText } from 'ai'
 
 const BASE_URL = process.env.FORGE_BASE_URL ?? 'http://127.0.0.1:8080/v1'
 const API_KEY = process.env.FORGE_API_KEY ?? 'not-needed'
-const MODEL = process.env.FORGE_MODEL ?? 'mlx-community/Llama-3.2-3B-Instruct-4bit'
+const MODEL = process.env.FORGE_MODEL ?? 'mlx-community/Mistral-Nemo-Instruct-2407-4bit'
 const MAX_TOKENS = Number(process.env.FORGE_MAX_TOKENS ?? '1024')
 
 async function readStdin(): Promise<string> {
