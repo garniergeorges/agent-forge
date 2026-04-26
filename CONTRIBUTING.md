@@ -1,6 +1,6 @@
 # Contributing to Agent Forge
 
-Thanks for your interest in this project. It is currently in **POC phase** — code contributions will open after the P1 milestone.
+Thanks for your interest in this project. It is currently in **POC phase** — code contributions will open after the P9 milestone (POC validated end-to-end). In the meantime, feedback and ideas via [issues](https://github.com/garniergeorges/agent-forge/issues) are very welcome.
 
 ## Project setup
 
