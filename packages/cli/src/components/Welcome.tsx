@@ -45,6 +45,7 @@ export function Welcome(): React.JSX.Element {
     send,
     addSystemMessage,
     clear,
+    reset,
     busy,
     scrollOffset,
     pending,
@@ -66,6 +67,7 @@ export function Welcome(): React.JSX.Element {
         lang: lang ?? 'en',
         setLang,
         clearChat: clear,
+        resetChat: reset,
         exit,
       })
       for (const line of result.lines) {
@@ -86,7 +88,7 @@ export function Welcome(): React.JSX.Element {
         info={`${t('welcomeHeaderInfo')} · model: ${shortModel(getCurrentModelName())}`}
       />
 
-      {hasMessages ? (
+      {hasPending ? null : hasMessages ? (
         <ChatViewport
           messages={state.messages}
           streaming={state.streaming}

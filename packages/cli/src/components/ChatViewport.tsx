@@ -37,7 +37,6 @@ function wrap(content: string, usable: number): string[] {
 
 function turnToLines(turn: ChatTurn, columns: number): VisualLine[] {
   const usable = Math.max(20, columns - PREFIX_WIDTH - 2)
-  const wrapped = wrap(turn.content, usable)
   let prefix: string
   let prefixColor: string
   let textColor: string
@@ -54,6 +53,7 @@ function turnToLines(turn: ChatTurn, columns: number): VisualLine[] {
     prefixColor = C.grey
     textColor = C.grey
   }
+  const wrapped = wrap(turn.content, usable)
   return wrapped.map((line, i) => ({
     key: `${turn.id}-${i.toString()}`,
     prefix: i === 0 ? prefix : CONTINUATION,

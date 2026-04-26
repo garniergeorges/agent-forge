@@ -1,19 +1,32 @@
 // Conversation state and streaming wiring for the CLI.
 //
-// Holds the message history (incl. system messages from slash commands and
-// action executions), calls streamBuilder, appends chunks live. After
-// streaming, parses any forge:write blocks the builder emitted and queues
-// them for user confirmation (the UI displays a y/n/d dialog ; nothing is
-// written before the user approves).
+// Two parallel surfaces are kept here :
+//   - `messages` : prose only (user, assistant, slash command output).
+//                  Renders in the bottom Welcome block.
+//   - `actions`  : structured actions the builder requested (write/run) with
+//                  their lifecycle (proposed → approved → running → done|failed).
+//                  Renders in the top MissionControl panel.
+//
+// Builder code blocks (```forge:*) are extracted into actions and STRIPPED
+// from the assistant's textual reply before that reply lands in `messages`.
 
 import { type ChatMessage, streamBuilder } from '@agent-forge/core/builder'
-import { useCallback, useState } from 'react'
+import { launchAgent } from '@agent-forge/tools-core'
+import { useCallback, useRef, useState } from 'react'
+import {
+  type Action,
+  type RunAction,
+  type WriteAction,
+  nextActionId,
+} from '../actions/types.ts'
 import {
   type ParsedAction,
   executeAction,
   findActionBlocks,
+  stripActionBlocks,
 } from '../builder-actions.ts'
 import type { Lang } from '../config/store.ts'
+import { getCurrentSession } from '../session/store.ts'
 
 export type TurnRole = 'user' | 'assistant' | 'system'
 
@@ -27,6 +40,7 @@ export type ChatState = {
   messages: ChatTurn[]
   streaming: ChatTurn | null
   error: string | null
+  actions: Action[]
 }
 
 const SCROLL_STEP = 4
@@ -37,19 +51,69 @@ const nextId = (): string => {
   return `m${counter.toString()}`
 }
 
-export type PendingAction = ParsedAction
+function persist(turn: ChatTurn): void {
+  try {
+    getCurrentSession().appendTurn(turn)
+  } catch {
+    // ignore
+  }
+}
+
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function actionFromParsed(parsed: ParsedAction): Action {
+  if (parsed.kind === 'write') {
+    return {
+      id: nextActionId(),
+      kind: 'write',
+      status: 'proposed',
+      path: parsed.path,
+      content: parsed.content,
+      createdAt: nowIso(),
+    }
+  }
+  return {
+    id: nextActionId(),
+    kind: 'run',
+    status: 'proposed',
+    agent: parsed.agent,
+    prompt: parsed.prompt,
+    createdAt: nowIso(),
+    output: '',
+  }
+}
+
+function parsedFromAction(action: Action): ParsedAction {
+  if (action.kind === 'write') {
+    return {
+      kind: 'write',
+      path: action.path,
+      content: action.content,
+      raw: '',
+    }
+  }
+  return {
+    kind: 'run',
+    agent: action.agent,
+    prompt: action.prompt,
+    raw: '',
+  }
+}
 
 export function useChat(lang: Lang): {
   state: ChatState
   send: (prompt: string) => Promise<void>
   addSystemMessage: (text: string) => void
   clear: () => void
+  reset: () => void
   busy: boolean
   scrollOffset: number
   scrollUp: () => void
   scrollDown: () => void
   scrollToBottom: () => void
-  pending: PendingAction | null
+  pending: Action | null
   approvePending: () => void
   declinePending: () => void
 } {
@@ -57,73 +121,143 @@ export function useChat(lang: Lang): {
     messages: [],
     streaming: null,
     error: null,
+    actions: [],
   })
   const [busy, setBusy] = useState(false)
   const [scrollOffset, setScrollOffset] = useState(0)
-  // Queue of actions awaiting user confirmation. We process one at a time ;
-  // `pending` exposes the head of the queue to the UI.
-  const [queue, setQueue] = useState<PendingAction[]>([])
+  // Buffer des messages cachés mais toujours envoyés au LLM dans `send`.
+  // `/clear` y déplace les messages visibles (vue vide, contexte préservé) ;
+  // `/reset` le purge. Stocké en ref pour ne pas redéclencher de rendu.
+  const hiddenHistoryRef = useRef<ChatTurn[]>([])
 
-  const scrollUp = useCallback(() => {
-    setScrollOffset((o) => o + SCROLL_STEP)
-  }, [])
-
-  const scrollDown = useCallback(() => {
-    setScrollOffset((o) => Math.max(0, o - SCROLL_STEP))
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    setScrollOffset(0)
-  }, [])
+  const scrollUp = useCallback(() => setScrollOffset((o) => o + SCROLL_STEP), [])
+  const scrollDown = useCallback(
+    () => setScrollOffset((o) => Math.max(0, o - SCROLL_STEP)),
+    [],
+  )
+  const scrollToBottom = useCallback(() => setScrollOffset(0), [])
 
   const addSystemMessage = useCallback((text: string) => {
     const sysTurn: ChatTurn = { id: nextId(), role: 'system', content: text }
     setScrollOffset(0)
+    persist(sysTurn)
     setState((prev) => ({ ...prev, messages: [...prev.messages, sysTurn] }))
   }, [])
 
+  // /clear : vide uniquement la vue (transcript + actions). Les messages
+  // visibles sont déplacés dans hiddenHistoryRef pour rester dans le contexte
+  // LLM aux prochains tours.
   const clear = useCallback(() => {
     setScrollOffset(0)
-    setQueue([])
-    setState({ messages: [], streaming: null, error: null })
+    setState((prev) => {
+      hiddenHistoryRef.current = [...hiddenHistoryRef.current, ...prev.messages]
+      return { messages: [], streaming: null, error: null, actions: [] }
+    })
   }, [])
+
+  // /reset : vide vue ET contexte LLM. Comme un redémarrage de session.
+  const reset = useCallback(() => {
+    setScrollOffset(0)
+    hiddenHistoryRef.current = []
+    setState({ messages: [], streaming: null, error: null, actions: [] })
+  }, [])
+
+  const updateAction = useCallback(
+    (id: string, patch: Partial<Action>): void => {
+      setState((prev) => ({
+        ...prev,
+        actions: prev.actions.map((a) =>
+          a.id === id ? ({ ...a, ...patch } as Action) : a,
+        ),
+      }))
+    },
+    [],
+  )
+
+  const runAgentAction = useCallback(
+    async (action: RunAction): Promise<void> => {
+      updateAction(action.id, { status: 'running' })
+      const handle = launchAgent({ agent: action.agent, prompt: action.prompt })
+      let acc = ''
+      let finalCode = -1
+      let stderrOut = ''
+      try {
+        for await (const evt of handle.events) {
+          if (evt.type === 'chunk') {
+            acc += evt.text
+            updateAction(action.id, { output: acc })
+          } else if (evt.type === 'stderr') {
+            stderrOut += evt.text
+          } else if (evt.type === 'done') {
+            finalCode = evt.exitCode
+          } else if (evt.type === 'error') {
+            updateAction(action.id, {
+              status: 'failed',
+              error: evt.error,
+              finishedAt: nowIso(),
+            })
+            return
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        updateAction(action.id, {
+          status: 'failed',
+          error: msg,
+          finishedAt: nowIso(),
+        })
+        return
+      }
+      updateAction(action.id, {
+        status: finalCode === 0 ? 'done' : 'failed',
+        output: acc.trim(),
+        exitCode: finalCode,
+        error:
+          finalCode === 0
+            ? undefined
+            : `exit ${finalCode.toString()}${stderrOut ? ` : ${stderrOut.split('\n').pop() ?? ''}` : ''}`,
+        finishedAt: nowIso(),
+      })
+    },
+    [updateAction],
+  )
+
+  const headPending = (state.actions.find((a) => a.status === 'proposed') ??
+    null) as Action | null
 
   const approvePending = useCallback(() => {
-    setQueue((q) => {
-      const [head, ...rest] = q
-      if (!head) return q
-      // The user just confirmed via the dialog — that is explicit consent
-      // to overwrite an existing file at the same path.
-      const exec = executeAction(head, { overwrite: true })
-      const sys: ChatTurn = exec.result.ok
-        ? {
-            id: nextId(),
-            role: 'system',
-            content: `✓ written ${exec.result.absolutePath}`,
-          }
-        : {
-            id: nextId(),
-            role: 'system',
-            content: `✗ fileWrite failed : ${exec.result.error}`,
-          }
-      setState((prev) => ({ ...prev, messages: [...prev.messages, sys] }))
-      return rest
-    })
-  }, [])
+    const head = state.actions.find((a) => a.status === 'proposed')
+    if (!head) return
+    if (head.kind === 'write') {
+      const parsed = parsedFromAction(head)
+      const exec = executeAction(parsed, { overwrite: true })
+      if (exec.kind === 'write' && exec.result.ok) {
+        updateAction(head.id, {
+          status: 'done',
+          result: { absolutePath: exec.result.absolutePath },
+          finishedAt: nowIso(),
+        })
+      } else {
+        updateAction(head.id, {
+          status: 'failed',
+          result:
+            exec.kind === 'write' && !exec.result.ok
+              ? { error: exec.result.error }
+              : { error: 'unknown error' },
+          finishedAt: nowIso(),
+        })
+      }
+    } else {
+      updateAction(head.id, { status: 'approved' })
+      void runAgentAction(head as RunAction)
+    }
+  }, [state.actions, runAgentAction, updateAction])
 
   const declinePending = useCallback(() => {
-    setQueue((q) => {
-      const [head, ...rest] = q
-      if (!head) return q
-      const sys: ChatTurn = {
-        id: nextId(),
-        role: 'system',
-        content: `× declined : ${head.path}`,
-      }
-      setState((prev) => ({ ...prev, messages: [...prev.messages, sys] }))
-      return rest
-    })
-  }, [])
+    const head = state.actions.find((a) => a.status === 'proposed')
+    if (!head) return
+    updateAction(head.id, { status: 'declined', finishedAt: nowIso() })
+  }, [state.actions, updateAction])
 
   const send = useCallback(
     async (prompt: string): Promise<void> => {
@@ -135,7 +269,9 @@ export function useChat(lang: Lang): {
       }
 
       setScrollOffset(0)
+      persist(userTurn)
       setState((prev) => ({
+        ...prev,
         messages: [...prev.messages, userTurn],
         streaming: assistantTurn,
         error: null,
@@ -144,6 +280,12 @@ export function useChat(lang: Lang): {
 
       try {
         const history: ChatMessage[] = [
+          ...hiddenHistoryRef.current
+            .filter((m) => m.role !== 'system')
+            .map(({ role, content }) => ({
+              role: role as 'user' | 'assistant',
+              content,
+            })),
           ...state.messages
             .filter((m) => m.role !== 'system')
             .map(({ role, content }) => ({
@@ -163,42 +305,43 @@ export function useChat(lang: Lang): {
           )
         }
 
-        // Commit the assistant turn.
-        setState((prev) => ({
-          messages: [...prev.messages, { ...assistantTurn, content: acc }],
-          streaming: null,
-          error: null,
-        }))
-
-        // Parse forge:write blocks. Malformed blocks are reported immediately
-        // as system messages ; well-formed blocks go to the confirmation queue.
+        // Extract any forge:* blocks BEFORE persisting the assistant text.
         const blocks = findActionBlocks(acc)
-        const sysLines: ChatTurn[] = []
-        const newPending: PendingAction[] = []
+        const parseErrors: ChatTurn[] = []
+        const newActions: Action[] = []
         for (const block of blocks) {
           if (!block.ok) {
-            sysLines.push({
+            parseErrors.push({
               id: nextId(),
               role: 'system',
               content: `✗ action skipped : ${block.error}`,
             })
           } else {
-            newPending.push(block.action)
+            newActions.push(actionFromParsed(block.action))
           }
         }
-        if (sysLines.length > 0) {
-          setState((prev) => ({
-            ...prev,
-            messages: [...prev.messages, ...sysLines],
-          }))
+        const proseOnly = stripActionBlocks(acc)
+        const finalAssistant: ChatTurn = {
+          ...assistantTurn,
+          content: proseOnly,
         }
-        if (newPending.length > 0) {
-          setQueue((q) => [...q, ...newPending])
-        }
+        persist(finalAssistant)
+        for (const e of parseErrors) persist(e)
+        setState((prev) => ({
+          ...prev,
+          messages: [
+            ...prev.messages,
+            ...(proseOnly.length > 0 ? [finalAssistant] : []),
+            ...parseErrors,
+          ],
+          streaming: null,
+          error: null,
+          actions: [...prev.actions, ...newActions],
+        }))
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         setState((prev) => ({
-          messages: prev.messages,
+          ...prev,
           streaming: null,
           error: msg,
         }))
@@ -214,12 +357,13 @@ export function useChat(lang: Lang): {
     send,
     addSystemMessage,
     clear,
+    reset,
     busy,
     scrollOffset,
     scrollUp,
     scrollDown,
     scrollToBottom,
-    pending: queue[0] ?? null,
+    pending: headPending,
     approvePending,
     declinePending,
   }

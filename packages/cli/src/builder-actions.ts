@@ -1,48 +1,111 @@
 // Parser + executor for the text-structured action protocol the builder
 // emits (see packages/core/src/builder/system-prompt.ts).
 //
-// Format expected in builder output :
+// Two block types are recognized :
 //
 //   ```forge:write
 //   path: <relative path under ~/.agent-forge/>
 //   ---
-//   <full file content, possibly multi-line>
+//   <full file content>
 //   ```
 //
-// The closing fence is optional : if absent, the parser takes everything
-// from the path line until the end of the message. This makes the parser
-// tolerant to small models that occasionally forget the trailing ```.
+//   ```forge:run
+//   agent: <kebab-case agent name>
+//   ---
+//   <prompt sent to the agent>
+//   ```
 //
-// If the path ends with `AGENT.md`, the content is validated with the
-// AgentMd Zod schema before being executed, and the validation error (if
-// any) is surfaced as a system message instead of writing junk to disk.
+// The closing fence is optional (small models sometimes forget the trailing
+// ```). When present, content stops there ; otherwise it extends to the
+// end of the message.
 
 import { parseAgentMd } from '@agent-forge/core/types'
 import { executeFileWrite } from '@agent-forge/tools-core'
 
-const FENCE_OPEN = /```forge:write\s*\n/g
+const FENCE_OPEN = /```forge:(write|run)\s*\n/g
+// Pattern used to strip whole forge:* blocks (open + body + optional close)
+// from the assistant text so the chat transcript stays prose-only.
+const FENCE_BLOCK = /```forge:(?:write|run)\s*\n[\s\S]*?(?:\n```|$)/g
 
-export type ParsedAction = {
+/** Remove every forge:write / forge:run block from a builder reply.
+ * Used to keep the chat transcript free of action code — actions live in
+ * the mission-control panel above. */
+export function stripActionBlocks(text: string): string {
+  return text.replace(FENCE_BLOCK, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+export type ParsedWriteAction = {
+  kind: 'write'
   path: string
   content: string
-  raw: string // the full block text, for echoing
+  raw: string
 }
+
+export type ParsedRunAction = {
+  kind: 'run'
+  agent: string
+  prompt: string
+  raw: string
+}
+
+export type ParsedAction = ParsedWriteAction | ParsedRunAction
 
 export type ActionParseResult =
   | { ok: true; action: ParsedAction }
   | { ok: false; error: string; raw: string }
 
-function parseInner(inner: string): { path: string; content: string } | null {
-  // Expected : `path: <something>\n---\n<content>`
+function splitHeaderBody(inner: string): { header: string; body: string } | null {
+  // Expected : `<key>: <value>\n---\n<body>`
   const lines = inner.split('\n')
   if (lines.length < 3) return null
-  const pathLine = lines[0] ?? ''
+  const headerLine = lines[0] ?? ''
   const sep = lines[1] ?? ''
-  if (!pathLine.startsWith('path:')) return null
   if (sep.trim() !== '---') return null
-  const path = pathLine.slice('path:'.length).trim()
-  const content = lines.slice(2).join('\n')
-  return { path, content }
+  return { header: headerLine, body: lines.slice(2).join('\n') }
+}
+
+function parseWrite(inner: string, raw: string): ActionParseResult {
+  const split = splitHeaderBody(inner)
+  if (!split || !split.header.startsWith('path:')) {
+    return {
+      ok: false,
+      error: 'malformed forge:write block (expected `path: ...` then `---` then content)',
+      raw,
+    }
+  }
+  return {
+    ok: true,
+    action: {
+      kind: 'write',
+      path: split.header.slice('path:'.length).trim(),
+      content: split.body,
+      raw,
+    },
+  }
+}
+
+function parseRun(inner: string, raw: string): ActionParseResult {
+  const split = splitHeaderBody(inner)
+  if (!split || !split.header.startsWith('agent:')) {
+    return {
+      ok: false,
+      error: 'malformed forge:run block (expected `agent: <name>` then `---` then prompt)',
+      raw,
+    }
+  }
+  const agent = split.header.slice('agent:'.length).trim()
+  if (!/^[a-z][a-z0-9-]*$/.test(agent)) {
+    return {
+      ok: false,
+      error: `forge:run agent name must be kebab-case (got "${agent}")`,
+      raw,
+    }
+  }
+  const prompt = split.body.trim()
+  if (prompt.length === 0) {
+    return { ok: false, error: 'forge:run prompt is empty', raw }
+  }
+  return { ok: true, action: { kind: 'run', agent, prompt, raw } }
 }
 
 export function findActionBlocks(text: string): ActionParseResult[] {
@@ -51,33 +114,35 @@ export function findActionBlocks(text: string): ActionParseResult[] {
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i]
     if (!m) continue
+    const kind = m[1] as 'write' | 'run'
     const start = (m.index ?? 0) + m[0].length
-    // Closing fence : either next ``` or end of text.
     const closingIdx = text.indexOf('\n```', start)
     const end = closingIdx >= 0 ? closingIdx : text.length
     const inner = text.slice(start, end).replace(/\s+$/, '')
     const raw = text.slice(m.index ?? 0, end + (closingIdx >= 0 ? 4 : 0))
-    const parsed = parseInner(inner)
-    if (!parsed) {
-      out.push({
-        ok: false,
-        error:
-          'malformed forge:write block (expected `path: ...` then `---` then content)',
-        raw,
-      })
-      continue
-    }
-    out.push({ ok: true, action: { path: parsed.path, content: parsed.content, raw } })
+    out.push(kind === 'write' ? parseWrite(inner, raw) : parseRun(inner, raw))
   }
   return out
 }
 
-export type ActionExecution = {
+export type WriteActionExecution = {
+  kind: 'write'
   path: string
   result:
     | { ok: true; absolutePath: string }
     | { ok: false; error: string }
 }
+
+export type RunActionExecution = {
+  kind: 'run'
+  agent: string
+  // The agent execution itself is asynchronous and streamed — handled by
+  // useChat directly via launchAgent(). This struct is only used for sync
+  // pre-flight (e.g. AGENT.md missing).
+  result: { ok: false; error: string } | { ok: true }
+}
+
+export type ActionExecution = WriteActionExecution | RunActionExecution
 
 function normalizeAgentMd(content: string): string {
   // Small models often confuse the protocol separator (`---` between path
@@ -94,10 +159,7 @@ function normalizeAgentMd(content: string): string {
 
 const AGENT_PATH_RE = /^(agents\/[a-z][a-z0-9-]*)\/[^/]+$/
 
-function normalizePath(path: string): string {
-  // Coerce any `agents/<name>/<whatever>.md` into the canonical
-  // `agents/<name>/AGENT.md`. Small models routinely emit
-  // `<name>.md`, `HAIKU-WRITER.md`, etc.
+function normalizeWritePath(path: string): string {
   const match = path.match(AGENT_PATH_RE)
   if (match && match[1]) {
     return `${match[1]}/AGENT.md`
@@ -109,22 +171,29 @@ function looksLikeAgent(path: string): boolean {
   return path.startsWith('agents/')
 }
 
+/**
+ * Synchronously prepare and (for write) execute a parsed action.
+ * For run actions, only validates pre-conditions ; the actual launch is
+ * driven by useChat via launchAgent() so output can be streamed.
+ */
 export function executeAction(
   action: ParsedAction,
   options: { overwrite?: boolean } = {},
 ): ActionExecution {
-  const path = normalizePath(action.path)
+  if (action.kind === 'run') {
+    return { kind: 'run', agent: action.agent, result: { ok: true } }
+  }
+
+  const path = normalizeWritePath(action.path)
   let content = action.content
 
-  // Anything under `agents/...` MUST be a valid AGENT.md. Normalize the
-  // frontmatter and validate before touching the disk.
   if (looksLikeAgent(path)) {
     content = normalizeAgentMd(content)
     try {
       parseAgentMd(content)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      return { path, result: { ok: false, error: msg } }
+      return { kind: 'write', path, result: { ok: false, error: msg } }
     }
   }
 
@@ -133,5 +202,5 @@ export function executeAction(
     content,
     overwrite: options.overwrite,
   })
-  return { path, result }
+  return { kind: 'write', path, result }
 }

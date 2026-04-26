@@ -14,8 +14,8 @@ afterEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true })
 })
 
-describe('findActionBlocks', () => {
-  test('parses a single valid block', () => {
+describe('findActionBlocks (write)', () => {
+  test('parses a single valid write block', () => {
     const md = `Sure, here is the agent :
 
 \`\`\`forge:write
@@ -38,14 +38,14 @@ Confirm to proceed.`
     expect(blocks.length).toBe(1)
     const first = blocks[0]
     expect(first?.ok).toBe(true)
-    if (first?.ok) {
+    if (first?.ok && first.action.kind === 'write') {
       expect(first.action.path).toBe('agents/haiku-writer/AGENT.md')
       expect(first.action.content).toContain('name: haiku-writer')
       expect(first.action.content).toContain('You are a poet.')
     }
   })
 
-  test('reports a malformed block (missing path/---)', () => {
+  test('reports a malformed write block (missing path/---)', () => {
     const md = "\`\`\`forge:write\nno path here\n\`\`\`"
     const blocks = findActionBlocks(md)
     expect(blocks.length).toBe(1)
@@ -56,7 +56,7 @@ Confirm to proceed.`
     expect(findActionBlocks('hello world').length).toBe(0)
   })
 
-  test('parses multiple blocks', () => {
+  test('parses multiple write blocks', () => {
     const md = `\`\`\`forge:write
 path: a.md
 ---
@@ -76,6 +76,66 @@ B
   })
 })
 
+describe('findActionBlocks (run)', () => {
+  test('parses a single valid run block', () => {
+    const md = `Lancement :
+
+\`\`\`forge:run
+agent: haiku-writer
+---
+écris un haiku sur Docker
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks.length).toBe(1)
+    const first = blocks[0]
+    expect(first?.ok).toBe(true)
+    if (first?.ok && first.action.kind === 'run') {
+      expect(first.action.agent).toBe('haiku-writer')
+      expect(first.action.prompt).toBe('écris un haiku sur Docker')
+    }
+  })
+
+  test('rejects run with non-kebab-case agent name', () => {
+    const md = `\`\`\`forge:run
+agent: HaikuWriter
+---
+hello
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks[0]?.ok).toBe(false)
+  })
+
+  test('rejects run with empty prompt', () => {
+    const md = `\`\`\`forge:run
+agent: haiku-writer
+---
+
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks[0]?.ok).toBe(false)
+  })
+
+  test('parses mixed write + run in the same message', () => {
+    const md = `\`\`\`forge:write
+path: agents/foo/AGENT.md
+---
+content
+\`\`\`
+
+\`\`\`forge:run
+agent: foo
+---
+prompt
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks.length).toBe(2)
+    expect(blocks[0]?.ok).toBe(true)
+    expect(blocks[1]?.ok).toBe(true)
+    if (blocks[0]?.ok) expect(blocks[0].action.kind).toBe('write')
+    if (blocks[1]?.ok) expect(blocks[1].action.kind).toBe('run')
+  })
+})
+
 describe('executeAction (path coercion + agent validation)', () => {
   const validFrontmatter = `---
 name: ${TEST_AGENT}
@@ -92,24 +152,30 @@ You are a test agent.`
 
   test('coerces agents/<name>/<wrong>.md to AGENT.md', () => {
     const exec = executeAction({
+      kind: 'write',
       path: `agents/${TEST_AGENT}/${TEST_AGENT}.md`,
       content: validFrontmatter,
       raw: '',
     })
-    expect(exec.path).toBe(`agents/${TEST_AGENT}/AGENT.md`)
-    expect(exec.result.ok).toBe(true)
-    if (exec.result.ok) {
-      expect(exec.result.absolutePath).toMatch(/AGENT\.md$/)
+    expect(exec.kind).toBe('write')
+    if (exec.kind === 'write') {
+      expect(exec.path).toBe(`agents/${TEST_AGENT}/AGENT.md`)
+      expect(exec.result.ok).toBe(true)
+      if (exec.result.ok) {
+        expect(exec.result.absolutePath).toMatch(/AGENT\.md$/)
+      }
     }
   })
 
   test('rejects an invalid AGENT.md (missing required fields)', () => {
     const exec = executeAction({
+      kind: 'write',
       path: `agents/${TEST_AGENT}/AGENT.md`,
       content: '# just a title',
       raw: '',
     })
-    expect(exec.result.ok).toBe(false)
+    expect(exec.kind).toBe('write')
+    if (exec.kind === 'write') expect(exec.result.ok).toBe(false)
   })
 
   test('normalizes a missing leading --- in frontmatter', () => {
@@ -123,10 +189,26 @@ maxTurns: 1
 
 body`
     const exec = executeAction({
+      kind: 'write',
       path: `agents/${TEST_AGENT}/AGENT.md`,
       content: noOpener,
       raw: '',
     })
-    expect(exec.result.ok).toBe(true)
+    expect(exec.kind).toBe('write')
+    if (exec.kind === 'write') expect(exec.result.ok).toBe(true)
+  })
+
+  test('run action passes through pre-flight (actual launch is async)', () => {
+    const exec = executeAction({
+      kind: 'run',
+      agent: 'haiku-writer',
+      prompt: 'hello',
+      raw: '',
+    })
+    expect(exec.kind).toBe('run')
+    if (exec.kind === 'run') {
+      expect(exec.agent).toBe('haiku-writer')
+      expect(exec.result.ok).toBe(true)
+    }
   })
 })
