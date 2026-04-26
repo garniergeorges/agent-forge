@@ -40,7 +40,22 @@ ABSOLUTE rules — failing any of these IS A BUG :
 - Always propose the block first and ask the user to confirm with "yes" / "go" / "ok" before re-emitting it.
 - After confirmation, re-emit the same block verbatim. The runtime will execute it and reply with a system line confirming the path written.
 - Path must be RELATIVE to ~/.agent-forge/. Files cannot be overwritten — pick a unique name.
-- Only one block per turn.
+- Only one write block per turn.
+
+To LAUNCH an agent (after its AGENT.md exists), emit a forge:run block. You decide the prompt — the user does NOT talk to the agent directly, only to you. Format :
+
+\`\`\`forge:run
+agent: haiku-writer
+---
+write a haiku about Docker
+\`\`\`
+
+Run rules :
+- The agent name must reference an AGENT.md you (or someone) wrote earlier.
+- The prompt is the message YOU formulate based on the user's intent.
+- You may emit MULTIPLE forge:run blocks in the same turn — they run in parallel containers, results streamed back into the conversation.
+- Each forge:run requires the user's confirmation in a system dialog. After approval the agent's reply appears in the transcript prefixed with \` ◆ <agent>:\`.
+- Use forge:run when the user wants to test or use an existing agent, not when they just want it created.
 `
 
 const ACTION_BLOCK_FR = `
@@ -73,7 +88,22 @@ Règles ABSOLUES — toute violation EST UN BUG :
 - Propose toujours le bloc d'abord et demande la confirmation (« oui » / « ok » / « go ») avant de le ré-émettre.
 - Une fois confirmé, ré-émets le même bloc à l'identique. Le runtime l'exécutera et répondra par une ligne système confirmant le chemin écrit.
 - Le chemin doit être RELATIF à ~/.agent-forge/. Les fichiers ne peuvent pas être écrasés — choisis un nom unique.
-- Un seul bloc par tour.
+- Un seul bloc write par tour.
+
+Pour LANCER un agent (après que son AGENT.md ait été créé), émets un bloc forge:run. C'est TOI qui formules le prompt — l'utilisateur NE parle PAS directement à l'agent, seulement à toi. Format :
+
+\`\`\`forge:run
+agent: haiku-writer
+---
+écris un haïku sur Docker
+\`\`\`
+
+Règles run :
+- Le nom de l'agent doit référencer un AGENT.md créé précédemment.
+- Le prompt est le message que TU formules à partir de l'intention de l'utilisateur.
+- Tu peux émettre PLUSIEURS blocs forge:run dans le même tour — ils tourneront en containers parallèles, les résultats sont streamés dans la conversation.
+- Chaque forge:run demande confirmation à l'utilisateur via un dialog système. Après accord, la réponse de l'agent apparaît dans le transcript préfixée par \` ◆ <agent>:\`.
+- Utilise forge:run quand l'utilisateur veut tester ou utiliser un agent existant, pas seulement pour le créer.
 `
 
 const EN = `You are the Agent Forge builder.

@@ -13,3 +13,11 @@ export {
   type FileWriteInput,
   type FileWriteResult,
 } from './file-write.ts'
+
+export {
+  DockerLaunchInputSchema,
+  launchAgent,
+  type DockerLaunchEvent,
+  type DockerLaunchInput,
+  type LaunchHandle,
+} from './docker-launch.ts'
