@@ -7,7 +7,7 @@
 //   2. A consistent protocol across builder and agents simplifies debugging
 //      and lets users read the raw stream.
 //
-// Block grammar :
+// Six tools wired today : bash, write, read, edit, grep, glob.
 //
 //   ```forge:bash
 //   { "command": "ls -la" }
@@ -17,37 +17,81 @@
 //   { "path": "src/index.ts", "content": "..." }
 //   ```
 //
+//   ```forge:read
+//   { "path": "src/index.ts", "offset": 0, "limit": 200 }
+//   ```
+//
+//   ```forge:edit
+//   { "path": "src/index.ts", "oldString": "...", "newString": "..." }
+//   ```
+//
+//   ```forge:grep
+//   { "pattern": "TODO", "glob": "**/*.ts", "ignoreCase": true }
+//   ```
+//
+//   ```forge:glob
+//   { "pattern": "src/**/*.ts" }
+//   ```
+//
 // Only ONE block is parsed per turn (the first encountered). Everything
-// before the block is treated as the agent's "thinking out loud" text and
-// streamed to the host. Everything after the block is dropped — the agent
-// will see the tool result on the next turn and continue from there.
+// before the block is treated as the agent's "thinking out loud" text
+// and streamed to the host. Everything after the block is dropped — the
+// agent will see the tool result on the next turn and continue from there.
 
 import { z } from 'zod'
 import {
   BashInputSchema,
+  RuntimeFileEditInputSchema,
+  RuntimeFileReadInputSchema,
   RuntimeFileWriteInputSchema,
+  RuntimeGlobInputSchema,
+  RuntimeGrepInputSchema,
   type BashInput,
   type BashResult,
+  type GrepHit,
+  type RuntimeFileEditInput,
+  type RuntimeFileEditResult,
+  type RuntimeFileReadInput,
+  type RuntimeFileReadResult,
   type RuntimeFileWriteInput,
   type RuntimeFileWriteResult,
+  type RuntimeGlobInput,
+  type RuntimeGlobResult,
+  type RuntimeGrepInput,
+  type RuntimeGrepResult,
 } from '@agent-forge/tools-core'
+
+export type ToolKind = 'bash' | 'write' | 'read' | 'edit' | 'grep' | 'glob'
 
 export type ParsedTool =
   | { kind: 'bash'; input: BashInput; raw: string }
   | { kind: 'write'; input: RuntimeFileWriteInput; raw: string }
+  | { kind: 'read'; input: RuntimeFileReadInput; raw: string }
+  | { kind: 'edit'; input: RuntimeFileEditInput; raw: string }
+  | { kind: 'grep'; input: RuntimeGrepInput; raw: string }
+  | { kind: 'glob'; input: RuntimeGlobInput; raw: string }
 
 export type ParseOutcome =
   | { kind: 'none'; text: string }
   | { kind: 'invalid'; text: string; error: string; raw: string }
   | { kind: 'tool'; text: string; tool: ParsedTool }
 
-const FENCE_RE = /```forge:(bash|write)\s*\n([\s\S]*?)```/
+const SCHEMAS: Record<ToolKind, z.ZodTypeAny> = {
+  bash: BashInputSchema,
+  write: RuntimeFileWriteInputSchema,
+  read: RuntimeFileReadInputSchema,
+  edit: RuntimeFileEditInputSchema,
+  grep: RuntimeGrepInputSchema,
+  glob: RuntimeGlobInputSchema,
+}
+
+const FENCE_RE = /```forge:(bash|write|read|edit|grep|glob)\s*\n([\s\S]*?)```/
 
 export function parseFirstToolBlock(stream: string): ParseOutcome {
   const m = FENCE_RE.exec(stream)
   if (!m) return { kind: 'none', text: stream }
 
-  const tag = m[1] as 'bash' | 'write'
+  const tag = m[1] as ToolKind
   const body = m[2] ?? ''
   const before = stream.slice(0, m.index)
 
@@ -65,37 +109,23 @@ export function parseFirstToolBlock(stream: string): ParseOutcome {
     }
   }
 
-  if (tag === 'bash') {
-    const result = BashInputSchema.safeParse(parsed)
-    if (!result.success) {
-      return {
-        kind: 'invalid',
-        text: before,
-        error: `forge:bash input failed validation : ${formatZodError(result.error)}`,
-        raw: m[0],
-      }
-    }
-    return {
-      kind: 'tool',
-      text: before,
-      tool: { kind: 'bash', input: result.data, raw: m[0] },
-    }
-  }
-
-  // tag === 'write'
-  const result = RuntimeFileWriteInputSchema.safeParse(parsed)
+  const schema = SCHEMAS[tag]
+  const result = schema.safeParse(parsed)
   if (!result.success) {
     return {
       kind: 'invalid',
       text: before,
-      error: `forge:write input failed validation : ${formatZodError(result.error)}`,
+      error: `forge:${tag} input failed validation : ${formatZodError(result.error)}`,
       raw: m[0],
     }
   }
+
+  // Narrow to the right ParsedTool variant by tag — the schema guarantees
+  // the data shape matches.
   return {
     kind: 'tool',
     text: before,
-    tool: { kind: 'write', input: result.data, raw: m[0] },
+    tool: { kind: tag, input: result.data, raw: m[0] } as ParsedTool,
   }
 }
 
@@ -105,13 +135,11 @@ function formatZodError(err: z.ZodError): string {
     .join(' ; ')
 }
 
-// Render a tool result as the message we feed back to the LLM on the next
-// turn. We use the same fenced format so the agent can recognize it as
-// "the result of MY previous call".
-export function renderBashResult(
-  input: BashInput,
-  result: BashResult,
-): string {
+// ── Result renderers : turn each tool's structured result into the
+// message we feed back to the LLM on the next turn. Same `[forge:X result]`
+// header so the agent recognizes it as the answer to its previous call.
+
+export function renderBashResult(input: BashInput, result: BashResult): string {
   const head = `[forge:bash result] command="${input.command}" exit=${result.exitCode.toString()}${
     result.timedOut ? ' (timed out)' : ''
   }`
@@ -128,6 +156,64 @@ export function renderWriteResult(
     return `[forge:write result] wrote ${result.absolutePath} (${result.bytes.toString()} bytes)`
   }
   return `[forge:write result] FAILED on path="${input.path}" : ${result.error}`
+}
+
+export function renderReadResult(
+  input: RuntimeFileReadInput,
+  result: RuntimeFileReadResult,
+): string {
+  if (!result.ok) {
+    return `[forge:read result] FAILED on path="${input.path}" : ${result.error}`
+  }
+  const head = `[forge:read result] ${result.absolutePath} · lines ${(input.offset ?? 0).toString()}..${(
+    (input.offset ?? 0) + result.returnedLines
+  ).toString()} of ${result.totalLines.toString()}${result.truncatedBytes ? ' (clipped)' : ''}`
+  return `${head}\n--- content ---\n${result.content}`
+}
+
+export function renderEditResult(
+  input: RuntimeFileEditInput,
+  result: RuntimeFileEditResult,
+): string {
+  if (result.ok) {
+    return `[forge:edit result] ${result.absolutePath} · ${result.replacements.toString()} replacement${
+      result.replacements === 1 ? '' : 's'
+    }`
+  }
+  return `[forge:edit result] FAILED on path="${input.path}" : ${result.error}`
+}
+
+export function renderGlobResult(
+  input: RuntimeGlobInput,
+  result: RuntimeGlobResult,
+): string {
+  if (!result.ok) {
+    return `[forge:glob result] FAILED on pattern="${input.pattern}" : ${result.error}`
+  }
+  const head = `[forge:glob result] ${result.matches.length.toString()} match${
+    result.matches.length === 1 ? '' : 'es'
+  }${result.truncated ? ' (truncated)' : ''}`
+  if (result.matches.length === 0) return head
+  return `${head}\n${result.matches.join('\n')}`
+}
+
+export function renderGrepResult(
+  input: RuntimeGrepInput,
+  result: RuntimeGrepResult,
+): string {
+  if (!result.ok) {
+    return `[forge:grep result] FAILED on pattern="${input.pattern}" : ${result.error}`
+  }
+  const head = `[forge:grep result] ${result.hits.length.toString()} hit${
+    result.hits.length === 1 ? '' : 's'
+  } across ${result.scanned.toString()} file${result.scanned === 1 ? '' : 's'}${
+    result.truncated ? ' (truncated)' : ''
+  }`
+  if (result.hits.length === 0) return head
+  const body = result.hits
+    .map((h: GrepHit) => `${h.path}:${h.line.toString()}: ${h.text}`)
+    .join('\n')
+  return `${head}\n${body}`
 }
 
 export function renderInvalid(error: string): string {

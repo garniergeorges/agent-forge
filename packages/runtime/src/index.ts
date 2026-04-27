@@ -22,13 +22,21 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { parseAgentMd } from '@agent-forge/core/types'
 import {
   executeBash,
+  executeRuntimeFileEdit,
+  executeRuntimeFileRead,
   executeRuntimeFileWrite,
+  executeRuntimeGlob,
+  executeRuntimeGrep,
 } from '@agent-forge/tools-core'
 import { type CoreMessage, streamText } from 'ai'
 import {
   parseFirstToolBlock,
   renderBashResult,
+  renderEditResult,
+  renderGlobResult,
+  renderGrepResult,
   renderInvalid,
+  renderReadResult,
   renderWriteResult,
 } from './tool-protocol.ts'
 
@@ -84,7 +92,7 @@ async function readStdin(): Promise<string> {
 
 const TOOL_PROMPT = `
 
-You have access to two native tools, callable by emitting a fenced block in your reply.
+You have access to six native tools, each callable by emitting a fenced block in your reply.
 
 ## forge:bash — execute a shell command
 
@@ -92,19 +100,51 @@ You have access to two native tools, callable by emitting a fenced block in your
 { "command": "ls -la", "timeoutMs": 10000 }
 \`\`\`
 
-The command runs via \`bash -lc\` inside /workspace. \`timeoutMs\` is optional (default 30000, max 120000). The result (stdout, stderr, exit code) will be injected back into the conversation on the next turn.
+Runs via \`bash -lc\` inside /workspace. \`timeoutMs\` defaults to 30000, capped at 120000.
 
-## forge:write — write a file in /workspace
+## forge:write — create or overwrite a file
 
 \`\`\`forge:write
 { "path": "src/index.ts", "content": "export const x = 1\\n" }
 \`\`\`
 
-\`path\` is relative to /workspace (or an absolute path under /workspace). Existing files are overwritten. The result (absolute path, bytes written, or an error) will be injected back into the conversation on the next turn.
+\`path\` is relative to /workspace (or absolute under /workspace). Existing files are overwritten.
+
+## forge:read — read a file
+
+\`\`\`forge:read
+{ "path": "src/index.ts", "offset": 0, "limit": 200 }
+\`\`\`
+
+\`offset\` and \`limit\` are line-based, both optional. Default limit 200, max 2000. Output is clipped at 16 KB ; use offset/limit to walk a long file.
+
+## forge:edit — patch a file by exact substring replacement
+
+\`\`\`forge:edit
+{ "path": "src/index.ts", "oldString": "const x = 1", "newString": "const x = 2" }
+\`\`\`
+
+\`oldString\` must match exactly once unless you set \`replaceAll\` true. If it matches multiple times, widen the surrounding context until it's unique.
+
+## forge:grep — regex search across files
+
+\`\`\`forge:grep
+{ "pattern": "TODO|FIXME", "glob": "src/**/*.ts", "ignoreCase": false }
+\`\`\`
+
+\`pattern\` is a JavaScript RegExp source. \`glob\` is optional (defaults to \`**/*\`). Returns up to 200 hits with path:line:text.
+
+## forge:glob — list files by pattern
+
+\`\`\`forge:glob
+{ "pattern": "src/**/*.ts" }
+\`\`\`
+
+Supports \`*\`, \`**\`, and \`?\`. Returns up to 200 paths relative to /workspace.
 
 ## Iteration
 
-- Emit at most ONE block per reply. Anything you write before the block is shown to the user. Anything after the block is discarded.
+- Emit at most ONE block per reply. Text before the block is shown to the user. Text after the block is discarded.
 - After you receive a tool result, decide whether you need another tool call or whether you can produce the final answer.
 - When you are done, reply with plain text (no fenced block).
 `
@@ -139,13 +179,32 @@ async function executeToolBlock(
   parsed: Extract<ReturnType<typeof parseFirstToolBlock>, { kind: 'tool' }>,
 ): Promise<string> {
   const tool = parsed.tool
-  if (tool.kind === 'bash') {
-    const result = await executeBash(tool.input)
-    return renderBashResult(tool.input, result)
+  switch (tool.kind) {
+    case 'bash': {
+      const result = await executeBash(tool.input)
+      return renderBashResult(tool.input, result)
+    }
+    case 'write': {
+      const result = executeRuntimeFileWrite(tool.input)
+      return renderWriteResult(tool.input, result)
+    }
+    case 'read': {
+      const result = executeRuntimeFileRead(tool.input)
+      return renderReadResult(tool.input, result)
+    }
+    case 'edit': {
+      const result = executeRuntimeFileEdit(tool.input)
+      return renderEditResult(tool.input, result)
+    }
+    case 'grep': {
+      const result = executeRuntimeGrep(tool.input)
+      return renderGrepResult(tool.input, result)
+    }
+    case 'glob': {
+      const result = executeRuntimeGlob(tool.input)
+      return renderGlobResult(tool.input, result)
+    }
   }
-  // tool.kind === 'write'
-  const result = executeRuntimeFileWrite(tool.input)
-  return renderWriteResult(tool.input, result)
 }
 
 async function main(): Promise<void> {

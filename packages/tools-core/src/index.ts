@@ -35,6 +35,36 @@ export {
 export {
   RuntimeFileWriteInputSchema,
   executeRuntimeFileWrite,
+  resolveSandboxedPath,
   type RuntimeFileWriteInput,
   type RuntimeFileWriteResult,
 } from './runtime/file-write.ts'
+
+export {
+  RuntimeFileReadInputSchema,
+  executeRuntimeFileRead,
+  type RuntimeFileReadInput,
+  type RuntimeFileReadResult,
+} from './runtime/file-read.ts'
+
+export {
+  RuntimeFileEditInputSchema,
+  executeRuntimeFileEdit,
+  type RuntimeFileEditInput,
+  type RuntimeFileEditResult,
+} from './runtime/file-edit.ts'
+
+export {
+  RuntimeGlobInputSchema,
+  executeRuntimeGlob,
+  type RuntimeGlobInput,
+  type RuntimeGlobResult,
+} from './runtime/glob.ts'
+
+export {
+  RuntimeGrepInputSchema,
+  executeRuntimeGrep,
+  type GrepHit,
+  type RuntimeGrepInput,
+  type RuntimeGrepResult,
+} from './runtime/grep.ts'
