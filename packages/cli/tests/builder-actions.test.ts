@@ -198,6 +198,48 @@ body`
     if (exec.kind === 'write') expect(exec.result.ok).toBe(true)
   })
 
+  test('quotes a description that contains an unquoted colon', () => {
+    const unsafe = `---
+name: ${TEST_AGENT}
+description: Audits the project. Step 1: list files. Step 2: fix TODOs.
+sandbox:
+  image: agent-forge/base:latest
+  timeout: 60s
+maxTurns: 1
+---
+
+body`
+    const exec = executeAction({
+      kind: 'write',
+      path: `agents/${TEST_AGENT}/AGENT.md`,
+      content: unsafe,
+      raw: '',
+    })
+    expect(exec.kind).toBe('write')
+    if (exec.kind === 'write') expect(exec.result.ok).toBe(true)
+  })
+
+  test('leaves an already-quoted description untouched', () => {
+    const safe = `---
+name: ${TEST_AGENT}
+description: "Step 1: do this. Step 2: do that."
+sandbox:
+  image: agent-forge/base:latest
+  timeout: 60s
+maxTurns: 1
+---
+
+body`
+    const exec = executeAction({
+      kind: 'write',
+      path: `agents/${TEST_AGENT}/AGENT.md`,
+      content: safe,
+      raw: '',
+    })
+    expect(exec.kind).toBe('write')
+    if (exec.kind === 'write') expect(exec.result.ok).toBe(true)
+  })
+
   test('run action passes through pre-flight (actual launch is async)', () => {
     const exec = executeAction({
       kind: 'run',
