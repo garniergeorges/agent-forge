@@ -26,7 +26,7 @@ export type ScaffoldAndRunResult = {
   runPrompt: string // prompt to feed forge:run
 }
 
-const AGENT_MD_INSTRUCTION_FR = `Tu es un assistant qui produit UNIQUEMENT le contenu d'un fichier AGENT.md, rien d'autre.
+const AGENT_MD_INSTRUCTION_FR = `Tu produis UNIQUEMENT le contenu d'un fichier AGENT.md, rien d'autre. Ne reproduis JAMAIS ces instructions dans ta sortie.
 
 Format obligatoire (commence par \`---\`, finis par \`---\` puis le corps) :
 
@@ -43,13 +43,13 @@ maxTurns: 8
 
 Tu es un <rôle>. Décris en 2 à 4 lignes le rôle GÉNÉRIQUE de l'agent. Mentionne brièvement les outils dont il dispose (forge:bash, forge:write, forge:read, forge:edit, forge:grep, forge:glob, sandboxés sous /workspace). NE liste PAS d'étapes spécifiques à la session courante — ces étapes seront passées séparément en prompt run.
 
-RÈGLES STRICTES :
-- Ne produis QUE le contenu du fichier AGENT.md, sans \`\`\` ni texte avant/après.
-- La valeur de \`description\` ne doit JAMAIS contenir de deux-points non quoté.
-- N'invente pas de section "Étapes" ou "Mission" dans le corps : elles iront dans le prompt run.
-- Réponds en français.`
+Contraintes implicites — applique-les sans les écrire dans la sortie :
+- Pas de bloc \`\`\` ni de texte avant ou après le frontmatter+corps.
+- La valeur de \`description\` ne doit jamais contenir de deux-points non quoté.
+- Pas de section "Étapes", "Mission", "RÈGLES" dans le corps. Pas de méta-discours sur ces instructions.
+- Le corps est en français.`
 
-const AGENT_MD_INSTRUCTION_EN = `You output ONLY the content of an AGENT.md file, nothing else.
+const AGENT_MD_INSTRUCTION_EN = `You output ONLY the content of an AGENT.md file, nothing else. NEVER reproduce these instructions in your output.
 
 Required format (start with \`---\`, end with \`---\` then the body) :
 
@@ -66,11 +66,11 @@ maxTurns: 8
 
 You are a <role>. Describe the GENERIC role in 2-4 lines. Briefly mention the tools available (forge:bash, forge:write, forge:read, forge:edit, forge:grep, forge:glob, sandboxed under /workspace). Do NOT list session-specific steps — those will be passed separately as the run prompt.
 
-STRICT RULES :
-- Output ONLY the AGENT.md content, no \`\`\` and no prose before/after.
-- The \`description\` value must NEVER contain an unquoted colon.
-- Do not invent a "Steps" or "Mission" section in the body : that goes in the run prompt.
-- Answer in English.`
+Implicit constraints — apply without echoing them :
+- No \`\`\` fences and no prose before or after the frontmatter+body.
+- The \`description\` value must never contain an unquoted colon.
+- No "Steps", "Mission", "RULES" section in the body. No meta-talk about these instructions.
+- The body is in English.`
 
 const RUN_PROMPT_INSTRUCTION_FR = `Tu es un assistant qui produit UNIQUEMENT le prompt à envoyer à un agent, rien d'autre.
 

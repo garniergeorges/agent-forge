@@ -71,6 +71,30 @@ function inheritEnv(): string[] {
   return out
 }
 
+// Names of env vars whose values must be redacted before any log line.
+// API keys leak in `docker spawn args` (we pass them via -e KEY=value)
+// otherwise. The redaction only affects logs — the container still
+// receives the real value.
+const SECRET_ENV_KEYS = new Set([
+  'FORGE_API_KEY',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'MISTRAL_API_KEY',
+])
+
+function redactSecretsInArgs(args: string[]): string[] {
+  return args.map((a) => {
+    // Only `-e KEY=value` pairs land as a single arg here. Match
+    // against our explicit allowlist so we never accidentally redact
+    // something benign.
+    const eq = a.indexOf('=')
+    if (eq < 0) return a
+    const key = a.slice(0, eq)
+    if (SECRET_ENV_KEYS.has(key)) return `${key}=***redacted***`
+    return a
+  })
+}
+
 // Build the docker run flags that enforce the hardening profile
 // declared in AGENT.md. These come BEFORE the image name in the
 // args array, after the standard --name / -i / -v block.
@@ -207,7 +231,10 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       '/runtime/runtime.mjs',
     ]
 
-    log.debug('docker spawn args', { containerName, args })
+    log.debug('docker spawn args', {
+      containerName,
+      args: redactSecretsInArgs(args),
+    })
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] })
 
     const timeout = setTimeout(() => {
@@ -256,10 +283,14 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
     child.stdin.write(input.prompt)
     child.stdin.end()
 
+    let streamedTotal = 0
+    let streamedAcc = ''
     try {
       while (true) {
         const evt = await next()
         if (evt.kind === 'end') break
+        streamedTotal += evt.text.length
+        streamedAcc += evt.text
         yield { type: 'chunk', text: evt.text }
       }
       const exitCode = await exitPromise
@@ -268,7 +299,8 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
         log.warn('docker stderr', { containerName, stderr })
         yield { type: 'stderr', text: stderr }
       }
-      log.info('done', { containerName, exitCode })
+      log.info('done', { containerName, exitCode, streamedBytes: streamedTotal })
+      log.trace('full agent output', { containerName, output: streamedAcc })
       yield { type: 'done', exitCode }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
