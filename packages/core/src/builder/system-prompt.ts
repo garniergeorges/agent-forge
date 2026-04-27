@@ -154,34 +154,42 @@ export type SkillCatalogEntry = {
   triggers: string[]
 }
 
-const SKILLS_HEADER_EN = `
+const SKILLS_PREAMBLE_EN = `STEP 0 — SKILL CHECK (mandatory, runs BEFORE any other action) :
 
-AVAILABLE SKILLS :
+Before doing ANYTHING else, scan the user's message for a skill trigger. The catalog below lists each skill, what it does, and the trigger phrases that activate it. If ANY trigger phrase appears in the user's message (case-insensitive, substring match counts), you MUST :
 
-You have access to a catalog of skills — high-level behaviours that orchestrate multiple actions in one turn for recurring intents. To activate one, emit a fenced \`forge:skill\` block. The CLI will inject the skill's full instructions as a system message in the next turn, after which you follow them.
+1. Emit a fenced \`forge:skill\` block as your FIRST and ONLY action of this turn.
+2. Do NOT also emit forge:write or forge:run in the same turn — wait for the skill body to be injected.
+3. The next turn will arrive with the skill's full instructions as a system message ; only then follow the rest of the protocol.
+
+Example (the user said "audite un projet typescript", "audite" is a trigger of scaffold-and-run) :
 
 \`\`\`forge:skill
 name: scaffold-and-run
 \`\`\`
 
-Choose a skill when the user's message matches its trigger phrases AND you would otherwise stop too early (e.g. only writing an AGENT.md when the user clearly also wants the agent to run with a specific task).
+Skip this step ONLY if NO trigger matches. In that case, fall through to the default protocol below.
 
-Catalog :
+Skill catalog :
 `
 
-const SKILLS_HEADER_FR = `
+const SKILLS_PREAMBLE_FR = `ÉTAPE 0 — VÉRIFICATION DE SKILL (obligatoire, AVANT toute autre action) :
 
-SKILLS DISPONIBLES :
+Avant TOUTE autre chose, analyse le message de l'utilisateur pour repérer un trigger de skill. Le catalogue ci-dessous liste chaque skill, ce qu'elle fait, et les phrases déclencheuses. Si UN seul trigger apparaît dans le message de l'utilisateur (insensible à la casse, sous-chaîne suffit), tu DOIS :
 
-Tu as accès à un catalogue de skills — des comportements de haut niveau qui orchestrent plusieurs actions dans le même tour pour des intentions récurrentes. Pour en activer une, émets un bloc \`forge:skill\` encadré. La CLI injectera les instructions complètes de la skill comme message système dans le tour suivant ; tu n'as plus qu'à les appliquer.
+1. Émettre un bloc \`forge:skill\` encadré comme PREMIÈRE et SEULE action de ce tour.
+2. Ne PAS émettre aussi un forge:write ou un forge:run dans le même tour — attends que le corps de la skill soit injecté.
+3. Au tour suivant, les instructions complètes de la skill arriveront en message système ; tu n'auras plus qu'à les suivre.
+
+Exemple (l'utilisateur dit « audite un projet typescript », « audite » est un trigger de scaffold-and-run) :
 
 \`\`\`forge:skill
 name: scaffold-and-run
 \`\`\`
 
-Choisis une skill quand le message utilisateur correspond à un de ses triggers ET que sans elle tu t'arrêterais trop tôt (par ex. n'écrire qu'un AGENT.md alors que l'utilisateur veut clairement aussi le lancer avec une tâche concrète).
+Ne passe cette étape QUE si AUCUN trigger ne matche. Dans ce cas seulement, applique le protocole par défaut ci-dessous.
 
-Catalogue :
+Catalogue de skills :
 `
 
 function renderCatalog(entries: SkillCatalogEntry[]): string {
@@ -189,7 +197,9 @@ function renderCatalog(entries: SkillCatalogEntry[]): string {
   return entries
     .map((s) => {
       const triggers =
-        s.triggers.length > 0 ? ` — triggers : ${s.triggers.join(', ')}` : ''
+        s.triggers.length > 0
+          ? ` — triggers : ${s.triggers.map((t) => `"${t}"`).join(', ')}`
+          : ''
       return `- ${s.name} : ${s.description}${triggers}`
     })
     .join('\n')
@@ -202,6 +212,11 @@ export function getBuilderSystemPrompt(
   const base = lang === 'fr' ? FR : EN
   const entries = options.skills ?? []
   if (entries.length === 0) return base
-  const header = lang === 'fr' ? SKILLS_HEADER_FR : SKILLS_HEADER_EN
-  return `${base}${header}${renderCatalog(entries)}`
+  const preamble =
+    lang === 'fr' ? SKILLS_PREAMBLE_FR : SKILLS_PREAMBLE_EN
+  // Place skills preamble BEFORE the base prompt so the LLM reads the
+  // skill check first. The base prompt's "be decisive, write
+  // immediately" rule has been pushing the model to skip skills ; this
+  // ordering plus the explicit STEP 0 framing fixes that.
+  return `${preamble}${renderCatalog(entries)}\n\n---\n\n${base}`
 }

@@ -9,10 +9,10 @@ describe('getBuilderSystemPrompt', () => {
   test('returns the base prompt when no skills are provided', () => {
     const en = getBuilderSystemPrompt('en')
     expect(en).toContain('Agent Forge builder')
-    expect(en).not.toContain('AVAILABLE SKILLS')
+    expect(en).not.toContain('STEP 0 — SKILL CHECK')
   })
 
-  test('appends a SKILLS section when entries are passed', () => {
+  test('prepends a SKILL CHECK preamble when entries are passed', () => {
     const en = getBuilderSystemPrompt('en', {
       skills: [
         {
@@ -22,17 +22,22 @@ describe('getBuilderSystemPrompt', () => {
         },
       ],
     })
-    expect(en).toContain('AVAILABLE SKILLS')
+    expect(en).toContain('STEP 0 — SKILL CHECK')
     expect(en).toContain('scaffold-and-run')
     expect(en).toContain('Create then run.')
-    expect(en).toContain('audite, test')
+    expect(en).toContain('"audite", "test"')
+    // Preamble must come BEFORE the base prompt so the model reads the
+    // skill rule before the "be decisive, write immediately" rule.
+    expect(en.indexOf('STEP 0 — SKILL CHECK')).toBeLessThan(
+      en.indexOf('Agent Forge builder'),
+    )
   })
 
   test('FR variant uses French headers', () => {
     const fr = getBuilderSystemPrompt('fr', {
       skills: [{ name: 'x', description: 'y', triggers: [] }],
     })
-    expect(fr).toContain('SKILLS DISPONIBLES')
-    expect(fr).not.toContain('AVAILABLE SKILLS')
+    expect(fr).toContain('ÉTAPE 0 — VÉRIFICATION DE SKILL')
+    expect(fr).not.toContain('STEP 0 — SKILL CHECK')
   })
 })
