@@ -1,7 +1,17 @@
 # Agent Forge — base image
 # Minimal sandbox for simple agents (read, edit, run shell).
 #
-# Status : POC, not built yet. This file is a sketch of the target.
+# Hardening (P5) :
+#   - non-root user `agent` (uid 1000) is the default at runtime
+#   - /workspace is the only writable dir owned by `agent`
+#   - DockerLaunch passes --read-only on the root FS, plus a tmpfs
+#     mount on /tmp so package installers and test runners that
+#     write under /tmp keep working without granting write to the
+#     image
+#   - --cap-drop=ALL --security-opt=no-new-privileges
+#   - --network=none by default ; agents that need network must
+#     declare `network: bridge` in AGENT.md.sandbox and the user
+#     gets a warning at confirm time
 
 FROM debian:bookworm-slim
 

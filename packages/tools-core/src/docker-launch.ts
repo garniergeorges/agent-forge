@@ -5,13 +5,25 @@
 // async generator. The container is named so we can force-remove it on
 // crash, signal, or timeout.
 //
+// P5 hardening : sandbox flags (--read-only, --cap-drop=ALL,
+// --security-opt=no-new-privileges, --network=none, --memory, --cpus,
+// --pids-limit, --user) are derived from the agent's AGENT.md sandbox
+// section through applySandboxDefaults. Defaults are strict — agents
+// must opt in to relax (network: bridge, readOnlyRoot: false, …) and
+// the permission dialog flags any non-default choice.
+//
 // Multi-instance ready : each call uses a unique container name so several
 // agents can run in parallel without collision.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
+import {
+  type AppliedSandboxConfig,
+  applySandboxDefaults,
+  parseAgentMd,
+} from '@agent-forge/core/types'
 import { FORGE_HOME } from './file-write.ts'
 
 export const DockerLaunchInputSchema = z.object({
@@ -30,7 +42,6 @@ export type DockerLaunchEvent =
   | { type: 'done'; exitCode: number }
   | { type: 'error'; error: string }
 
-const IMAGE = process.env.FORGE_AGENT_IMAGE ?? 'agent-forge/base:latest'
 const TIMEOUT_MS = Number(process.env.FORGE_RUN_TIMEOUT_MS ?? '120000')
 
 // Resolved at runtime (host filesystem) — same path the CLI uses to mount
@@ -57,10 +68,57 @@ function inheritEnv(): string[] {
   return out
 }
 
+// Build the docker run flags that enforce the hardening profile
+// declared in AGENT.md. These come BEFORE the image name in the
+// args array, after the standard --name / -i / -v block.
+//
+// Exported (alongside resolveSandboxFromAgentMd) so tests can verify
+// the translation without spawning an actual container.
+export function hardeningFlags(cfg: AppliedSandboxConfig): string[] {
+  const out: string[] = [
+    '--cap-drop=ALL',
+    '--security-opt=no-new-privileges',
+    `--network=${cfg.network}`,
+    `--user=${cfg.user}`,
+    `--memory=${cfg.memory}`,
+    `--cpus=${cfg.cpus.toString()}`,
+    `--pids-limit=${cfg.pidsLimit.toString()}`,
+  ]
+  if (cfg.readOnlyRoot) {
+    // Read-only root FS, with a tmpfs over /tmp so package
+    // installers, test runners and shell utilities that scribble
+    // there keep working without granting write to the image.
+    // /workspace is bind-mounted RW just below, so it's not
+    // affected by --read-only.
+    out.push('--read-only', '--tmpfs=/tmp:rw,size=64m,mode=1777')
+  }
+  return out
+}
+
 export type LaunchHandle = {
   containerName: string
   events: AsyncGenerator<DockerLaunchEvent, void, void>
   abort: () => void
+}
+
+/**
+ * Resolve the AGENT.md frontmatter to its applied sandbox config —
+ * same routine used internally before launching, exposed here so the
+ * permission dialog can show the user what hardening profile this
+ * agent will run with (and warn on relaxations like network=bridge).
+ *
+ * Returns null if the AGENT.md cannot be parsed ; the caller should
+ * surface a parse error in the UI instead.
+ */
+export function resolveSandboxFromAgentMd(
+  agentMdContent: string,
+): AppliedSandboxConfig | null {
+  try {
+    const parsed = parseAgentMd(agentMdContent)
+    return applySandboxDefaults(parsed.meta.sandbox)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -100,6 +158,22 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       return
     }
 
+    // Read the AGENT.md to know which image and which hardening
+    // profile to apply. Parsing here means malformed AGENT.md
+    // surfaces as a clean error before docker is even invoked.
+    let sandboxCfg: AppliedSandboxConfig
+    try {
+      const raw = readFileSync(agentMdPath, 'utf8')
+      const parsed = parseAgentMd(raw)
+      sandboxCfg = applySandboxDefaults(parsed.meta.sandbox)
+    } catch (err) {
+      yield {
+        type: 'error',
+        error: `cannot read AGENT.md : ${err instanceof Error ? err.message : String(err)}`,
+      }
+      return
+    }
+
     mkdirSync(workspaceHostDir, { recursive: true })
 
     const args = [
@@ -108,6 +182,8 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       '-i',
       '--name',
       containerName,
+      // Volumes BEFORE hardening flags so --read-only doesn't reject
+      // them.
       '-v',
       `${agentMdPath}:/agent/AGENT.md:ro`,
       '-v',
@@ -116,8 +192,9 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       `${workspaceHostDir}:/workspace`,
       '-w',
       '/workspace',
+      ...hardeningFlags(sandboxCfg),
       ...inheritEnv(),
-      IMAGE,
+      sandboxCfg.image,
       'node',
       '/runtime/runtime.mjs',
     ]

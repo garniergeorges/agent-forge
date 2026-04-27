@@ -26,12 +26,45 @@ import { z } from 'zod'
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/
 
+// Resource caps applied via `docker run --memory`, `--cpus`, `--pids-limit`.
+// Strict defaults : an agent should never need more than this for the
+// kind of small task we run in P5. Authors can relax via AGENT.md when
+// a specific job needs it ; the permission dialog surfaces the change.
+export const AgentSandboxResourcesSchema = z.object({
+  memory: z
+    .string()
+    .regex(/^\d+[mg]$/i, 'memory must look like 512m, 2g')
+    .optional(),
+  cpus: z.number().positive().max(8).optional(),
+  pidsLimit: z.number().int().positive().max(4096).optional(),
+})
+
 export const AgentSandboxSchema = z.object({
   image: z.string().min(1),
   timeout: z
     .string()
     .regex(/^\d+[smh]$/, 'timeout must look like 30s, 5m, 1h')
     .optional(),
+  // P5 hardening : isolation knobs the builder can declare per agent.
+  // All optional with strict defaults applied at launch time.
+  network: z
+    .enum(['none', 'bridge'])
+    .optional()
+    .describe(
+      "Network policy. 'none' (default) : no internet. 'bridge' : Docker bridge network, agent can reach the internet — surfaced in the permission dialog as risky.",
+    ),
+  readOnlyRoot: z
+    .boolean()
+    .optional()
+    .describe(
+      'Read-only root filesystem. Default true. /workspace and /tmp stay writable. Disable only for agents that need to install packages on top of the base image (rare).',
+    ),
+  user: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]*$/i, 'user must be a valid Unix username')
+    .optional()
+    .describe('Linux user the runtime runs as inside the container. Default "agent" (uid 1000, non-root).'),
+  resources: AgentSandboxResourcesSchema.optional(),
 })
 
 export const AgentMdSchema = z.object({
@@ -44,6 +77,48 @@ export const AgentMdSchema = z.object({
   sandbox: AgentSandboxSchema,
   maxTurns: z.number().int().positive().default(1),
 })
+
+// Strict defaults applied at launch time when AGENT.md leaves the
+// hardening fields off. Centralised here so DockerLaunch and the
+// permission dialog read the same source of truth.
+export const SANDBOX_DEFAULTS = {
+  network: 'none' as const,
+  readOnlyRoot: true,
+  user: 'agent',
+  memory: '512m',
+  cpus: 1,
+  pidsLimit: 128,
+} as const
+
+export type AppliedSandboxConfig = {
+  image: string
+  network: 'none' | 'bridge'
+  readOnlyRoot: boolean
+  user: string
+  memory: string
+  cpus: number
+  pidsLimit: number
+}
+
+/**
+ * Resolve an AGENT.md sandbox block against the strict defaults.
+ * Anything not specified by the agent author falls back to the
+ * defaults — DockerLaunch can then translate the result directly
+ * into `docker run` flags without re-reading the schema.
+ */
+export function applySandboxDefaults(
+  sandbox: AgentMd['sandbox'],
+): AppliedSandboxConfig {
+  return {
+    image: sandbox.image,
+    network: sandbox.network ?? SANDBOX_DEFAULTS.network,
+    readOnlyRoot: sandbox.readOnlyRoot ?? SANDBOX_DEFAULTS.readOnlyRoot,
+    user: sandbox.user ?? SANDBOX_DEFAULTS.user,
+    memory: sandbox.resources?.memory ?? SANDBOX_DEFAULTS.memory,
+    cpus: sandbox.resources?.cpus ?? SANDBOX_DEFAULTS.cpus,
+    pidsLimit: sandbox.resources?.pidsLimit ?? SANDBOX_DEFAULTS.pidsLimit,
+  }
+}
 
 export type AgentMd = z.infer<typeof AgentMdSchema>
 

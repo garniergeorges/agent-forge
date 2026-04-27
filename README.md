@@ -37,7 +37,9 @@ The builder is the only conversational surface. Sub-agents are spawned on demand
 | **P3** | Builder writes `AGENT.md`, asks for permission, launches the agent in a fresh container, streams its output | ✅ done |
 | **P4** | Six native tools sandboxed under `/workspace` : Bash, FileWrite, FileRead, FileEdit, Grep, Glob ; runtime tool-loop with `maxTurns` | ✅ done |
 | **P6** | Skill layer : `SKILL.md` format, catalog (built-in + `~/.agent-forge/skills/`), server-side trigger matching, two-call runner (one for AGENT.md, one for the run prompt) | ✅ done |
-| P5 | Hardened sandbox + persistent agents (`docker exec`) + artifact extraction back to host | next |
+| **P5.1** | Hardened Docker sandbox : non-root user, read-only root + tmpfs `/tmp`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--network=none` by default, resource caps (memory / cpus / pids). Permission dialog flags any AGENT.md relaxation. | ✅ done |
+| P5.2 | Artifact extraction back to host (`~/.agent-forge/artifacts/<session>/<agent>/`) | next |
+| P5.3 | Persistent agents via `docker exec`, lifecycle slash commands | |
 | P7 | `TEAM.md` — coordinated multi-agent runs | |
 | P8 | Pixel-art dashboard (live agent activity) | |
 | P9 | ★ POC validated : Next.js + Laravel + QA demo end-to-end | |

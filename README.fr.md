@@ -37,7 +37,9 @@ Le builder est la seule surface conversationnelle. Les sous-agents sont créés 
 | **P3** | Le builder écrit l'`AGENT.md`, demande la permission, lance l'agent dans un container neuf, streame la sortie | ✅ fait |
 | **P4** | Six tools natifs sandboxés sous `/workspace` : Bash, FileWrite, FileRead, FileEdit, Grep, Glob ; tool-loop runtime avec `maxTurns` | ✅ fait |
 | **P6** | Couche skills : format `SKILL.md`, catalogue (built-in + `~/.agent-forge/skills/`), matching des triggers côté serveur, runner à 2 appels (un pour AGENT.md, un pour le run prompt) | ✅ fait |
-| P5 | Sandbox durci + agents persistants (`docker exec`) + extraction d'artefacts vers le host | suivant |
+| **P5.1** | Sandbox Docker durci : user non-root, racine read-only + tmpfs `/tmp`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--network=none` par défaut, caps ressources (mémoire / cpus / pids). Le dialog de permission signale toute relaxation déclarée dans l'AGENT.md. | ✅ fait |
+| P5.2 | Extraction d'artefacts vers le host (`~/.agent-forge/artifacts/<session>/<agent>/`) | suivant |
+| P5.3 | Agents persistants via `docker exec`, slash commands de cycle de vie | |
 | P7 | `TEAM.md` — exécutions multi-agents coordonnées | |
 | P8 | Dashboard pixel art (activité agents en direct) | |
 | P9 | ★ POC validé : démo Next.js + Laravel + QA de bout en bout | |

@@ -16,7 +16,9 @@ export {
 
 export {
   DockerLaunchInputSchema,
+  hardeningFlags,
   launchAgent,
+  resolveSandboxFromAgentMd,
   type DockerLaunchEvent,
   type DockerLaunchInput,
   type LaunchHandle,

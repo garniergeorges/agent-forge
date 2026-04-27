@@ -5,14 +5,119 @@
 // Style : framed (double orange border), distinct from the chat flow, with
 // an explicit question, a metadata block, a preview, and three "button-
 // like" choices.
+//
+// P5 : when a write action concerns an AGENT.md whose sandbox section
+// relaxes the strict defaults (network=bridge, readOnlyRoot=false,
+// elevated resources), we surface a list of warnings between the
+// metadata and the preview so the user notices before approving.
 
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Box, Text, useInput, useStdin } from 'ink'
 import React, { useState } from 'react'
+import {
+  type AppliedSandboxConfig,
+  SANDBOX_DEFAULTS,
+  applySandboxDefaults,
+  parseAgentMd,
+} from '@agent-forge/core/types'
 import type { Action } from '../actions/types.ts'
 import { useLanguage } from '../i18n/LanguageContext.tsx'
 import { C } from '../theme/colors.ts'
 
 const PREVIEW_LINES = 6
+
+type SandboxWarning = {
+  field: string
+  detail: string
+}
+
+function diffAgainstDefaults(
+  cfg: AppliedSandboxConfig,
+  lang: 'en' | 'fr',
+): SandboxWarning[] {
+  const t = lang === 'fr'
+  const out: SandboxWarning[] = []
+  if (cfg.network !== SANDBOX_DEFAULTS.network) {
+    out.push({
+      field: 'network',
+      detail: t
+        ? `réseau ouvert (${cfg.network}) — l'agent pourra accéder à internet`
+        : `network open (${cfg.network}) — agent will have internet access`,
+    })
+  }
+  if (cfg.readOnlyRoot !== SANDBOX_DEFAULTS.readOnlyRoot) {
+    out.push({
+      field: 'readOnlyRoot',
+      detail: t
+        ? "racine en écriture — l'agent peut modifier le système de fichiers de l'image"
+        : 'writable root — agent can mutate the image filesystem',
+    })
+  }
+  if (cfg.user !== SANDBOX_DEFAULTS.user) {
+    out.push({
+      field: 'user',
+      detail: t
+        ? `utilisateur "${cfg.user}" au lieu de "${SANDBOX_DEFAULTS.user}"`
+        : `user "${cfg.user}" instead of "${SANDBOX_DEFAULTS.user}"`,
+    })
+  }
+  if (cfg.memory !== SANDBOX_DEFAULTS.memory) {
+    out.push({
+      field: 'memory',
+      detail: t
+        ? `mémoire ${cfg.memory} (défaut ${SANDBOX_DEFAULTS.memory})`
+        : `memory ${cfg.memory} (default ${SANDBOX_DEFAULTS.memory})`,
+    })
+  }
+  if (cfg.cpus !== SANDBOX_DEFAULTS.cpus) {
+    out.push({
+      field: 'cpus',
+      detail: t
+        ? `CPU ${cfg.cpus} (défaut ${SANDBOX_DEFAULTS.cpus.toString()})`
+        : `cpus ${cfg.cpus.toString()} (default ${SANDBOX_DEFAULTS.cpus.toString()})`,
+    })
+  }
+  if (cfg.pidsLimit !== SANDBOX_DEFAULTS.pidsLimit) {
+    out.push({
+      field: 'pidsLimit',
+      detail: t
+        ? `pids ${cfg.pidsLimit.toString()} (défaut ${SANDBOX_DEFAULTS.pidsLimit.toString()})`
+        : `pids ${cfg.pidsLimit.toString()} (default ${SANDBOX_DEFAULTS.pidsLimit.toString()})`,
+    })
+  }
+  return out
+}
+
+// Resolve the sandbox config from whichever source the action carries :
+// - write action targeting an AGENT.md → parse the proposed content
+//   directly (the file may not exist on disk yet)
+// - run action → read the persisted AGENT.md from ~/.agent-forge
+// Returns null if no AGENT.md is involved or parsing fails.
+function sandboxFor(action: Action): AppliedSandboxConfig | null {
+  try {
+    if (action.kind === 'write' && action.path.endsWith('AGENT.md')) {
+      const parsed = parseAgentMd(action.content)
+      return applySandboxDefaults(parsed.meta.sandbox)
+    }
+    if (action.kind === 'run') {
+      const path = join(
+        homedir(),
+        '.agent-forge',
+        'agents',
+        action.agent,
+        'AGENT.md',
+      )
+      if (!existsSync(path)) return null
+      const parsed = parseAgentMd(readFileSync(path, 'utf8'))
+      return applySandboxDefaults(parsed.meta.sandbox)
+    }
+  } catch {
+    return null
+  }
+  return null
+}
 
 type Strings = {
   title: string
@@ -29,6 +134,7 @@ type Strings = {
   collapse: string
   actionWrite: string
   actionRun: string
+  warningHeader: string
 }
 
 const STRINGS: Record<'en' | 'fr', Strings> = {
@@ -47,6 +153,7 @@ const STRINGS: Record<'en' | 'fr', Strings> = {
     collapse: 'Collapse preview',
     actionWrite: 'create file',
     actionRun: 'launch agent',
+    warningHeader: 'Sandbox relaxations applied to this agent :',
   },
   fr: {
     title: 'AUTORISATION REQUISE',
@@ -63,6 +170,7 @@ const STRINGS: Record<'en' | 'fr', Strings> = {
     collapse: "Réduire l’aperçu",
     actionWrite: 'créer un fichier',
     actionRun: 'lancer un agent',
+    warningHeader: 'Relaxations sandbox appliquées à cet agent :',
   },
 }
 
@@ -185,6 +293,30 @@ export function ConfirmAction({
           </>
         )}
       </Box>
+
+      {/* Sandbox warnings : surface every relaxation vs the strict
+          defaults so the user can spot e.g. network=bridge before
+          approving. Only renders when at least one relaxation is
+          declared in the AGENT.md sandbox section. */}
+      {(() => {
+        const cfg = sandboxFor(action)
+        if (!cfg) return null
+        const warnings = diffAgainstDefaults(cfg, lang ?? 'en')
+        if (warnings.length === 0) return null
+        return (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={C.red} bold>
+              {`  ▲ ${s.warningHeader}`}
+            </Text>
+            {warnings.map((w) => (
+              <Box key={w.field}>
+                <Text color={C.red}>{`    · ${w.field}`}</Text>
+                <Text color={C.greyLight}>{` — ${w.detail}`}</Text>
+              </Box>
+            ))}
+          </Box>
+        )
+      })()}
 
       {/* Preview */}
       <Box flexDirection="column" marginTop={1}>
