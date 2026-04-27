@@ -1,12 +1,16 @@
 // MissionControl — fills the top zone whenever there is at least one
-// builder action (write or run). Replaces the splash screen for the rest
-// of the session.
+// builder action. Two display modes per card :
 //
-// Each action gets a card with :
-//   - a status badge (proposed / running / done / failed)
-//   - the target (file path or agent name)
-//   - a syntax-highlighted preview of the content (YAML for AGENT.md,
-//     plain for prompts) or the streaming agent output
+//   - compact (default for unfocused cards) : 1 terminal line, badge +
+//     verb + target, kept together with a thin border.
+//   - expanded (focused card, or any card whose status is 'running' so
+//     a streaming output stays visible) : the full preview panel as
+//     before.
+//
+// The panel itself is bounded : it accepts a panelHeight prop and
+// renders only the slice of cards starting at scrollTop that fits
+// within that height. Truncation is signalled by "↑ N above /
+// ↓ N below" hints in the header.
 
 import { Box, Text } from 'ink'
 import React from 'react'
@@ -132,6 +136,39 @@ function FocusMarker({ focused }: { focused: boolean }): React.JSX.Element {
   )
 }
 
+// ── Compact row : single line for unfocused cards ─────────────────
+
+function verbFor(action: Action): string {
+  if (action.kind === 'write') return 'write'
+  if (action.kind === 'run') return 'run'
+  return 'skill'
+}
+
+function targetFor(action: Action): string {
+  if (action.kind === 'write') return action.path
+  if (action.kind === 'run') return action.agent
+  return action.skill
+}
+
+function CompactRow({
+  action,
+  focused,
+}: {
+  action: Action
+  focused: boolean
+}): React.JSX.Element {
+  return (
+    <Box paddingX={1}>
+      <FocusMarker focused={focused} />
+      <StatusBadge status={action.status} />
+      <Text color={C.grey} dimColor>{`  ${verbFor(action).padEnd(5, ' ')}  `}</Text>
+      <Text color={C.white}>{targetFor(action)}</Text>
+    </Box>
+  )
+}
+
+// ── Expanded cards ────────────────────────────────────────────────
+
 function WriteCard({
   action,
   focused,
@@ -236,22 +273,96 @@ function SkillCard({
   )
 }
 
-export function MissionControl({
+// ── Layout : how many lines does a card need ? ────────────────────
+
+const COMPACT_HEIGHT = 1
+
+function expandedHeight(action: Action): number {
+  // Empirical estimate ; we don't try to be exact, we want a stable
+  // upper bound so the panel can budget rows.
+  if (action.kind === 'write') {
+    // CardFrame border 2, header 1, marginTop 1, body up to 14, hint 1+1 = ~20
+    return 20
+  }
+  if (action.kind === 'run') {
+    // border 2, header 1, prompt label 1, prompt up to 6, output label 1, output up to 14, error 1 = ~26
+    return 26
+  }
+  // skill : border 2, header 1, description ~1, loaded hint 1 = ~7
+  return 7
+}
+
+function heightOf(
+  action: Action,
+  focused: boolean,
+): number {
+  if (focused) return expandedHeight(action)
+  // Running cards stay expanded so a streaming agent run stays visible.
+  if (action.status === 'running') return expandedHeight(action)
+  return COMPACT_HEIGHT + 1 /* paddingY around row */
+}
+
+// ── Slicing : start at scrollTop, fit within panelHeight ──────────
+
+type Slice = {
+  visible: Action[]
+  hiddenAbove: number
+  hiddenBelow: number
+}
+
+function sliceForViewport({
   actions,
   focusedId,
+  scrollTop,
+  panelHeight,
 }: {
   actions: Action[]
   focusedId: string | null
+  scrollTop: number
+  panelHeight: number
+}): Slice {
+  const start = Math.min(Math.max(0, scrollTop), Math.max(0, actions.length - 1))
+  const visible: Action[] = []
+  let used = 0
+  for (let i = start; i < actions.length; i += 1) {
+    const a = actions[i] as Action
+    const h = heightOf(a, a.id === focusedId)
+    if (used + h > panelHeight && visible.length > 0) break
+    visible.push(a)
+    used += h
+    if (used >= panelHeight) break
+  }
+  return {
+    visible,
+    hiddenAbove: start,
+    hiddenBelow: Math.max(0, actions.length - start - visible.length),
+  }
+}
+
+export function MissionControl({
+  actions,
+  focusedId,
+  scrollTop,
+  panelHeight,
+}: {
+  actions: Action[]
+  focusedId: string | null
+  scrollTop: number
+  panelHeight: number
 }): React.JSX.Element {
   const cols = process.stdout.columns ?? 80
+  // Reserve 2 rows for the header + truncation hints, the rest is body.
+  const bodyHeight = Math.max(3, panelHeight - 2)
+  const slice = sliceForViewport({
+    actions,
+    focusedId,
+    scrollTop,
+    panelHeight: bodyHeight,
+  })
+
   return (
-    <Box
-      flexDirection="column"
-      width={cols}
-      paddingX={2}
-      paddingY={1}
-    >
-      <Box marginBottom={1}>
+    <Box flexDirection="column" width={cols} paddingX={2} paddingY={1}>
+      <Box>
         <Text color={C.orange} bold>
           {' ▌▌ MISSION CONTROL ▐▐ '}
         </Text>
@@ -268,12 +379,27 @@ export function MissionControl({
           </Text>
         )}
       </Box>
-      {actions.map((a) => {
+
+      {slice.hiddenAbove > 0 ? (
+        <Text color={C.grey} dimColor>
+          {`  ↑ ${slice.hiddenAbove.toString()} action${slice.hiddenAbove === 1 ? '' : 's'} above`}
+        </Text>
+      ) : null}
+
+      {slice.visible.map((a) => {
         const focused = a.id === focusedId
+        const expand = focused || a.status === 'running'
+        if (!expand) return <CompactRow key={a.id} action={a} focused={focused} />
         if (a.kind === 'write') return <WriteCard key={a.id} action={a} focused={focused} />
         if (a.kind === 'run') return <RunCard key={a.id} action={a} focused={focused} />
         return <SkillCard key={a.id} action={a} focused={focused} />
       })}
+
+      {slice.hiddenBelow > 0 ? (
+        <Text color={C.grey} dimColor>
+          {`  ↓ ${slice.hiddenBelow.toString()} action${slice.hiddenBelow === 1 ? '' : 's'} below`}
+        </Text>
+      ) : null}
     </Box>
   )
 }

@@ -8,10 +8,14 @@
 //   │  Welcome     │   header + transcript + (confirm dialog OR prompt) + footer
 //   └──────────────┘ ← terminal bottom (FIXED)
 //
-// PgUp / PgDn / Ctrl+E scroll the chat transcript inside Welcome.
-// Tab / Shift+Tab cycle focus through Mission Control cards (only when
-// the prompt input is empty so it doesn't fight TextInput). Enter on a
-// focused card opens a full-screen CardDetail view ; Esc closes it.
+// Scroll responsibilities :
+//   - Welcome's chat transcript : PgUp/PgDn/Ctrl+E when no card is focused
+//     AND no Mission Control scroll is needed.
+//   - Mission Control panel : PgUp/PgDn when focus is inside the panel
+//     (or, more simply, when there are more actions than fit and the
+//     prompt is empty).
+//   - Tab/Shift+Tab cycle the focused card. Enter opens the detail
+//     view. Esc unfocuses. The detail view is a full-screen modal.
 
 import { Box, useInput, useStdin } from 'ink'
 import React from 'react'
@@ -23,6 +27,12 @@ import { MissionControl } from './MissionControl.tsx'
 import { ProviderLogo } from './ProviderLogo.tsx'
 import { Splash } from './Splash.tsx'
 import { Welcome } from './Welcome.tsx'
+
+// Keep Welcome's bottom block (header + transcript + prompt + footer)
+// at this minimum height ; everything above goes to Mission Control.
+const WELCOME_MIN_HEIGHT = 12
+// Reserve a few rows above Welcome for the spacer + provider logo.
+const SPACER_HEIGHT = 4
 
 export function App(): React.JSX.Element {
   const { lang } = useLanguage()
@@ -36,9 +46,14 @@ export function App(): React.JSX.Element {
   const hasActions = state.actions.length > 0
   const promptIsEmpty = promptDraft.length === 0
 
-  // Tab/Enter is only meaningful when there are actions, the prompt is
-  // empty (so TextInput doesn't lose its keystrokes), and no permission
-  // dialog is showing.
+  // Mission Control gets whatever is left after Welcome and the
+  // spacer/logo claim their slots. Floor at 6 so the panel never
+  // collapses below "header + 1 card line + truncation hints".
+  const panelHeight = Math.max(
+    6,
+    rows - WELCOME_MIN_HEIGHT - SPACER_HEIGHT,
+  )
+
   const cardKeysActive =
     isRawModeSupported &&
     lang !== null &&
@@ -49,15 +64,26 @@ export function App(): React.JSX.Element {
 
   useInput(
     (input, key) => {
-      if (key.pageUp) scrollUp()
-      else if (key.pageDown) scrollDown()
-      else if (key.ctrl && input === 'e') scrollToBottom()
-      else if (cardKeysActive && key.tab && key.shift) focus.cycleBack()
+      // PgUp/PgDn : when a card is focused OR there's nothing in the
+      // prompt and we have actions, scroll Mission Control. Otherwise
+      // scroll the chat transcript (legacy behaviour).
+      if (key.pageUp) {
+        if (cardKeysActive || focus.focusedId !== null) focus.scrollUp()
+        else scrollUp()
+        return
+      }
+      if (key.pageDown) {
+        if (cardKeysActive || focus.focusedId !== null) focus.scrollDown()
+        else scrollDown()
+        return
+      }
+      if (key.ctrl && input === 'e') {
+        scrollToBottom()
+        return
+      }
+      if (cardKeysActive && key.tab && key.shift) focus.cycleBack()
       else if (cardKeysActive && key.tab) focus.cycle()
       else if (cardKeysActive && key.return) focus.open()
-      // Esc clears the card focus (only when something is focused and
-      // the prompt is empty, so we never swallow an Esc the user meant
-      // for cancelling input).
       else if (
         key.escape &&
         promptIsEmpty &&
@@ -82,7 +108,12 @@ export function App(): React.JSX.Element {
     <Box flexDirection="column" height={rows} width={cols}>
       <Box flexShrink={1} flexDirection="column" overflow="hidden">
         {hasActions ? (
-          <MissionControl actions={state.actions} focusedId={focus.focusedId} />
+          <MissionControl
+            actions={state.actions}
+            focusedId={focus.focusedId}
+            scrollTop={focus.scrollTop}
+            panelHeight={panelHeight}
+          />
         ) : (
           <Splash />
         )}
