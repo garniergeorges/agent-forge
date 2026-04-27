@@ -224,7 +224,7 @@ export function MissionControl({
           </Text>
         ) : (
           <Text color={C.grey} dimColor>
-            {'   [Enter] open detail  ·  [Tab/Shift+Tab] cycle'}
+            {'   [Enter] open detail  ·  [Tab/Shift+Tab] cycle  ·  [Esc] unfocus'}
           </Text>
         )}
       </Box>

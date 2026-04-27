@@ -55,6 +55,17 @@ export function App(): React.JSX.Element {
       else if (cardKeysActive && key.tab && key.shift) focus.cycleBack()
       else if (cardKeysActive && key.tab) focus.cycle()
       else if (cardKeysActive && key.return) focus.open()
+      // Esc clears the card focus (only when something is focused and
+      // the prompt is empty, so we never swallow an Esc the user meant
+      // for cancelling input).
+      else if (
+        key.escape &&
+        promptIsEmpty &&
+        !hasPending &&
+        focus.focusedId !== null
+      ) {
+        focus.clearFocus()
+      }
     },
     { isActive: isRawModeSupported && lang !== null && !focus.detailOpen },
   )
