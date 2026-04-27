@@ -17,7 +17,7 @@
 // inside [forge:tool] markers so the host can show them in Mission
 // Control without re-running the parser.
 
-import { Agent as HttpAgent, request as httpRequest } from 'node:http'
+import { request as httpRequest } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { createOpenAI } from '@ai-sdk/openai'
 import { parseAgentMd } from '@agent-forge/core/types'
@@ -88,8 +88,9 @@ function loadAgentConfig(): AgentConfig {
 // only knows about TCP. Two helpers solve it :
 //   - normaliseBaseUrl returns a synthetic http://localhost URL with
 //     the same path, used purely as a key by the SDK
-//   - makeFetchFor returns a custom fetch that routes every request
-//     through an http.Agent bound to the socket
+//   - makeFetchFor returns a custom fetch that pipes every request
+//     through http.request with a top-level socketPath option (the
+//     standard Node.js way to do HTTP-over-UDS — no http.Agent)
 //
 // The host's LLM proxy listens on that socket, injects the real
 // API key, and forwards to the upstream. The container therefore
@@ -126,7 +127,6 @@ function normaliseBaseUrl(baseUrl: string): string {
 function makeFetchFor(baseUrl: string): typeof fetch | undefined {
   if (!isUnixBaseUrl(baseUrl)) return undefined
   const socketPath = unixSocketPath(baseUrl)
-  const agent = new HttpAgent({ socketPath } as unknown as ConstructorParameters<typeof HttpAgent>[0])
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const parsed = new URL(url)
@@ -139,12 +139,15 @@ function makeFetchFor(baseUrl: string): typeof fetch | undefined {
       })
     }
     return await new Promise<Response>((resolve, reject) => {
+      // socketPath is a top-level option on http.request — passing
+      // it via Agent throws ENOTSUP because the default Agent does
+      // TCP connect. Direct option = direct Unix connect.
       const req = httpRequest(
         {
           method,
+          socketPath,
           path: parsed.pathname + parsed.search,
           headers,
-          agent,
         },
         (res) => {
           const respHeaders = new Headers()
