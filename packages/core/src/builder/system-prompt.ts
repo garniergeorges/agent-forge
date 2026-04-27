@@ -154,42 +154,22 @@ export type SkillCatalogEntry = {
   triggers: string[]
 }
 
-const SKILLS_PREAMBLE_EN = `STEP 0 — SKILL CHECK (mandatory, runs BEFORE any other action) :
+// Note : skill activation is now handled SERVER-SIDE by the CLI, not
+// by the LLM. Trigger matching, runner dispatch, and write+run
+// orchestration all happen in TypeScript before the LLM is even
+// called for the matched user message. This keeps the small models
+// out of the meta-decision business and makes the orchestration
+// deterministic.
+//
+// We still surface the skill catalog in the system prompt as a short
+// informational note, so the LLM doesn't get confused when a skill
+// card appears in Mission Control — it knows skills exist and that
+// they were dispatched on its behalf.
 
-Before doing ANYTHING else, scan the user's message for a skill trigger. The catalog below lists each skill, what it does, and the trigger phrases that activate it. If ANY trigger phrase appears in the user's message (case-insensitive, substring match counts), you MUST :
-
-1. Emit a fenced \`forge:skill\` block as your FIRST and ONLY action of this turn.
-2. Do NOT also emit forge:write or forge:run in the same turn — wait for the skill body to be injected.
-3. The next turn will arrive with the skill's full instructions as a system message ; only then follow the rest of the protocol.
-
-Example (the user said "audite un projet typescript", "audite" is a trigger of scaffold-and-run) :
-
-\`\`\`forge:skill
-name: scaffold-and-run
-\`\`\`
-
-Skip this step ONLY if NO trigger matches. In that case, fall through to the default protocol below.
-
-Skill catalog :
+const SKILLS_PREAMBLE_EN = `Skills available (auto-dispatched by the CLI when the user message matches a trigger ; you do NOT need to invoke them yourself) :
 `
 
-const SKILLS_PREAMBLE_FR = `ÉTAPE 0 — VÉRIFICATION DE SKILL (obligatoire, AVANT toute autre action) :
-
-Avant TOUTE autre chose, analyse le message de l'utilisateur pour repérer un trigger de skill. Le catalogue ci-dessous liste chaque skill, ce qu'elle fait, et les phrases déclencheuses. Si UN seul trigger apparaît dans le message de l'utilisateur (insensible à la casse, sous-chaîne suffit), tu DOIS :
-
-1. Émettre un bloc \`forge:skill\` encadré comme PREMIÈRE et SEULE action de ce tour.
-2. Ne PAS émettre aussi un forge:write ou un forge:run dans le même tour — attends que le corps de la skill soit injecté.
-3. Au tour suivant, les instructions complètes de la skill arriveront en message système ; tu n'auras plus qu'à les suivre.
-
-Exemple (l'utilisateur dit « audite un projet typescript », « audite » est un trigger de scaffold-and-run) :
-
-\`\`\`forge:skill
-name: scaffold-and-run
-\`\`\`
-
-Ne passe cette étape QUE si AUCUN trigger ne matche. Dans ce cas seulement, applique le protocole par défaut ci-dessous.
-
-Catalogue de skills :
+const SKILLS_PREAMBLE_FR = `Skills disponibles (déclenchées automatiquement par la CLI quand le message utilisateur correspond à un trigger ; tu n'as PAS à les invoquer toi-même) :
 `
 
 function renderCatalog(entries: SkillCatalogEntry[]): string {
@@ -212,11 +192,6 @@ export function getBuilderSystemPrompt(
   const base = lang === 'fr' ? FR : EN
   const entries = options.skills ?? []
   if (entries.length === 0) return base
-  const preamble =
-    lang === 'fr' ? SKILLS_PREAMBLE_FR : SKILLS_PREAMBLE_EN
-  // Place skills preamble BEFORE the base prompt so the LLM reads the
-  // skill check first. The base prompt's "be decisive, write
-  // immediately" rule has been pushing the model to skip skills ; this
-  // ordering plus the explicit STEP 0 framing fixes that.
-  return `${preamble}${renderCatalog(entries)}\n\n---\n\n${base}`
+  const preamble = lang === 'fr' ? SKILLS_PREAMBLE_FR : SKILLS_PREAMBLE_EN
+  return `${base}\n\n${preamble}${renderCatalog(entries)}`
 }

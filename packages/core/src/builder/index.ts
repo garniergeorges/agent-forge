@@ -18,3 +18,8 @@ export {
   type SkillCatalog,
   type SkillEntry,
 } from './skill-catalog.ts'
+export { matchSkillForMessage } from './skill-matcher.ts'
+export {
+  runScaffoldAndRun,
+  type ScaffoldAndRunResult,
+} from './skill-runner.ts'

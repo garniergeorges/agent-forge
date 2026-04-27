@@ -13,6 +13,8 @@
 import {
   type ChatMessage,
   loadSkillCatalog,
+  matchSkillForMessage,
+  runScaffoldAndRun,
   streamBuilder,
 } from '@agent-forge/core/builder'
 import { launchAgent } from '@agent-forge/tools-core'
@@ -335,6 +337,95 @@ export function useChat(lang: Lang): {
       }))
       setBusy(true)
 
+      // Server-side skill matching : if a trigger phrase appears in the
+      // user message, dispatch to the dedicated runner instead of the
+      // generic streaming flow. The runner makes two narrow LLM calls
+      // (one per artefact) so small models keep the AGENT.md and the
+      // run prompt cleanly separated.
+      const matched = matchSkillForMessage(prompt, skillCatalog.skills)
+      if (matched && matched.name === 'scaffold-and-run') {
+        const skillCard: SkillAction = {
+          id: nextActionId(),
+          kind: 'skill',
+          status: 'running',
+          skill: matched.name,
+          description: matched.description,
+          createdAt: nowIso(),
+        }
+        setState((prev) => ({
+          ...prev,
+          streaming: null,
+          actions: [...prev.actions, skillCard],
+        }))
+        try {
+          const result = await runScaffoldAndRun({
+            userMessage: prompt,
+            lang,
+          })
+          if (!result) {
+            updateAction(skillCard.id, {
+              status: 'failed',
+              error: 'skill runner produced no usable output',
+              finishedAt: nowIso(),
+            })
+            setBusy(false)
+            return
+          }
+          // Mark the skill as done and surface a write + run pair as
+          // proposed cards. The user approves them in order via the
+          // permission dialog.
+          updateAction(skillCard.id, {
+            status: 'done',
+            body: matched.body,
+            finishedAt: nowIso(),
+          })
+          const writeCard: WriteAction = {
+            id: nextActionId(),
+            kind: 'write',
+            status: 'proposed',
+            path: `agents/${result.agentName}/AGENT.md`,
+            content: result.agentMdContent,
+            createdAt: nowIso(),
+          }
+          const runCard: RunAction = {
+            id: nextActionId(),
+            kind: 'run',
+            status: 'proposed',
+            agent: result.agentName,
+            prompt: result.runPrompt,
+            createdAt: nowIso(),
+            output: '',
+          }
+          // Final assistant turn : one short prose sentence so the user
+          // sees in the conversation that the skill fired.
+          const proseTurn: ChatTurn = {
+            id: nextId(),
+            role: 'assistant',
+            content:
+              lang === 'fr'
+                ? `Je charge la skill ${matched.name} : un AGENT.md à approuver, puis l'exécution.`
+                : `Loading skill ${matched.name} : one AGENT.md to approve, then the run.`,
+          }
+          persist(proseTurn)
+          setState((prev) => ({
+            ...prev,
+            messages: [...prev.messages, proseTurn],
+            actions: [...prev.actions, writeCard, runCard],
+          }))
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          updateAction(skillCard.id, {
+            status: 'failed',
+            error: msg,
+            finishedAt: nowIso(),
+          })
+          setState((prev) => ({ ...prev, error: msg }))
+        } finally {
+          setBusy(false)
+        }
+        return
+      }
+
       try {
         const history: ChatMessage[] = [
           ...hiddenHistoryRef.current
@@ -450,7 +541,7 @@ export function useChat(lang: Lang): {
         setBusy(false)
       }
     },
-    [state.messages, lang],
+    [state.messages, lang, skillCatalog, skillEntries, updateAction],
   )
 
   return {
