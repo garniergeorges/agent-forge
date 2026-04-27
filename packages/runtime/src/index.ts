@@ -271,9 +271,19 @@ async function streamOneTurn(
     maxTokens: MAX_TOKENS,
   })
   let acc = ''
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk)
-    acc += chunk
+  // textStream silently completes on upstream errors in Vercel AI SDK
+  // v4 ; we walk fullStream instead so 'error' parts surface as a
+  // real throw the host can see in stderr (and the dockerLaunch
+  // logger will pick up).
+  for await (const part of result.fullStream) {
+    if (part.type === 'text-delta') {
+      process.stdout.write(part.textDelta)
+      acc += part.textDelta
+    } else if (part.type === 'error') {
+      const err = part.error
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`LLM upstream error : ${msg}`)
+    }
   }
   return acc
 }
