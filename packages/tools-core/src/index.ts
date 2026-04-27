@@ -24,6 +24,12 @@ export {
   type LaunchHandle,
 } from './docker-launch.ts'
 
+export {
+  startLlmProxy,
+  type LlmProxyHandle,
+  type LlmProxyOptions,
+} from './llm-proxy.ts'
+
 // Runtime-side tools — used INSIDE the agent's container, sandboxed to
 // /workspace. Distinct from the host-side FileWrite above.
 export {

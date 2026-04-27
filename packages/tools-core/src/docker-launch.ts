@@ -12,12 +12,21 @@
 // must opt in to relax (network: bridge, readOnlyRoot: false, …) and
 // the permission dialog flags any non-default choice.
 //
-// Multi-instance ready : each call uses a unique container name so several
-// agents can run in parallel without collision.
+// LLM proxy : because --network=none cuts the container off from the
+// internet, an LLM proxy server is started on the HOST before docker
+// run, listening on a Unix socket bind-mounted into the container at
+// /run/forge/llm.sock. The runtime points its OpenAI client at that
+// socket. The proxy forwards only /v1/chat/completions to the real
+// FORGE_BASE_URL with FORGE_API_KEY injected. Container env carries
+// neither the real URL nor the key.
+//
+// Multi-instance ready : each call uses a unique container name + a
+// unique socket path, so several agents can run in parallel without
+// collision.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { getLogger } from '@agent-forge/core/log'
 import {
@@ -26,8 +35,15 @@ import {
   parseAgentMd,
 } from '@agent-forge/core/types'
 import { FORGE_HOME } from './file-write.ts'
+import { type LlmProxyHandle, startLlmProxy } from './llm-proxy.ts'
 
 const log = getLogger('dockerLaunch')
+
+// Where the proxy socket appears INSIDE the container. The runtime's
+// OpenAI client reads FORGE_BASE_URL and connects to this socket via
+// a custom http agent.
+const CONTAINER_SOCKET_PATH = '/run/forge/llm.sock'
+const CONTAINER_BASE_URL = `unix://${CONTAINER_SOCKET_PATH}/v1`
 
 export const DockerLaunchInputSchema = z.object({
   agent: z
@@ -59,15 +75,19 @@ function uniqueContainerName(agent: string): string {
   return `agent-forge-run-${agent}-${id}`
 }
 
-function inheritEnv(): string[] {
-  // Forward LLM credentials and overrides into the container so the runtime
-  // can call the same provider as the builder.
-  const passthrough = ['FORGE_BASE_URL', 'FORGE_API_KEY', 'FORGE_MODEL']
-  const out: string[] = []
-  for (const k of passthrough) {
-    const v = process.env[k]
-    if (v) out.push('-e', `${k}=${v}`)
-  }
+function containerEnv(): string[] {
+  // The container does NOT receive the real LLM endpoint nor the API
+  // key. Instead it gets the in-container Unix socket URL ; the host
+  // proxy injects credentials and forwards to the real upstream.
+  const out: string[] = ['-e', `FORGE_BASE_URL=${CONTAINER_BASE_URL}`]
+  // Model name is fine to share — it's not a secret and the runtime
+  // needs it to ask for the right model.
+  const model = process.env.FORGE_MODEL
+  if (model) out.push('-e', `FORGE_MODEL=${model}`)
+  // The OpenAI SDK requires a non-empty API key field even when the
+  // upstream doesn't authenticate. Use a sentinel that's obviously
+  // not a credential.
+  out.push('-e', 'FORGE_API_KEY=via-proxy')
   return out
 }
 
@@ -201,10 +221,33 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
     }
 
     mkdirSync(workspaceHostDir, { recursive: true })
+
+    // Start the per-run LLM proxy on a Unix socket. The socket lives
+    // on the host under ~/.agent-forge/run/<container>/llm.sock and
+    // is bind-mounted at /run/forge/llm.sock inside the container.
+    const socketHostDir = join(FORGE_HOME, 'run', containerName)
+    const socketHostPath = join(socketHostDir, 'llm.sock')
+    const upstreamBase = process.env.FORGE_BASE_URL ?? 'https://api.mistral.ai/v1'
+    const upstreamKey = process.env.FORGE_API_KEY ?? ''
+    let proxy: LlmProxyHandle | null = null
+    try {
+      proxy = await startLlmProxy({
+        socketPath: socketHostPath,
+        upstreamBaseUrl: upstreamBase,
+        apiKey: upstreamKey,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error('proxy start failed', { error: msg })
+      yield { type: 'error', error: `cannot start LLM proxy : ${msg}` }
+      return
+    }
+
     log.info('launching', {
       agent: input.agent,
       containerName,
       workspaceHostDir,
+      socketHostPath,
       sandboxCfg,
     })
 
@@ -222,10 +265,15 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       `${RUNTIME_DIST_FROM_TOOLS}:/runtime:ro`,
       '-v',
       `${workspaceHostDir}:/workspace`,
+      // The LLM proxy socket : the host file is bind-mounted at the
+      // container path the runtime expects. The directory is mounted
+      // (not the file) so the socket inode resolves correctly.
+      '-v',
+      `${socketHostDir}:${dirname(CONTAINER_SOCKET_PATH)}`,
       '-w',
       '/workspace',
       ...hardeningFlags(sandboxCfg),
-      ...inheritEnv(),
+      ...containerEnv(),
       sandboxCfg.image,
       'node',
       '/runtime/runtime.mjs',
@@ -309,6 +357,15 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
     } finally {
       clearTimeout(timeout)
       forceRemove()
+      if (proxy) {
+        try {
+          proxy.stop()
+        } catch (err) {
+          log.warn('proxy stop failed', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
     }
   }
 

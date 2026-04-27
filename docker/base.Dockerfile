@@ -9,9 +9,10 @@
 #     write under /tmp keep working without granting write to the
 #     image
 #   - --cap-drop=ALL --security-opt=no-new-privileges
-#   - --network=none by default ; agents that need network must
-#     declare `network: bridge` in AGENT.md.sandbox and the user
-#     gets a warning at confirm time
+#   - --network=none always — even agents that need an LLM call go
+#     through the host's per-run LLM proxy, bind-mounted as a Unix
+#     socket at /run/forge/llm.sock. The host injects the API key
+#     and forwards only /v1/chat/completions to the real upstream.
 
 FROM debian:bookworm-slim
 
@@ -34,8 +35,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
 
 # ─── Non-root user ───────────────────────────────────────────────
 RUN useradd -m -s /bin/bash agent \
-    && mkdir -p /workspace \
-    && chown agent:agent /workspace
+    && mkdir -p /workspace /run/forge \
+    && chown agent:agent /workspace /run/forge
 USER agent
 WORKDIR /workspace
 

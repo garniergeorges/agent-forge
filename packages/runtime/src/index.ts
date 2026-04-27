@@ -17,6 +17,7 @@
 // inside [forge:tool] markers so the host can show them in Mission
 // Control without re-running the parser.
 
+import { Agent as HttpAgent, request as httpRequest } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { createOpenAI } from '@ai-sdk/openai'
 import { parseAgentMd } from '@agent-forge/core/types'
@@ -80,6 +81,108 @@ function loadAgentConfig(): AgentConfig {
     }
   }
   return config
+}
+
+// When FORGE_BASE_URL points at a Unix socket (unix:///path/to/sock/v1),
+// we can't hand it directly to the OpenAI SDK : its fetch implementation
+// only knows about TCP. Two helpers solve it :
+//   - normaliseBaseUrl returns a synthetic http://localhost URL with
+//     the same path, used purely as a key by the SDK
+//   - makeFetchFor returns a custom fetch that routes every request
+//     through an http.Agent bound to the socket
+//
+// The host's LLM proxy listens on that socket, injects the real
+// API key, and forwards to the upstream. The container therefore
+// runs with --network=none and never sees a credential.
+
+function isUnixBaseUrl(baseUrl: string): boolean {
+  return baseUrl.startsWith('unix://')
+}
+
+function unixSocketPath(baseUrl: string): string {
+  // unix:///run/forge/llm.sock/v1 → /run/forge/llm.sock
+  // We split on the next path segment after the socket file. The
+  // proxy's allowlist works at /v1/chat/completions, so by
+  // convention we use a path suffix of /v1.
+  const stripped = baseUrl.slice('unix://'.length)
+  const v1Idx = stripped.lastIndexOf('/v1')
+  return v1Idx > 0 ? stripped.slice(0, v1Idx) : stripped
+}
+
+function urlPathSuffix(baseUrl: string): string {
+  const stripped = baseUrl.slice('unix://'.length)
+  const v1Idx = stripped.lastIndexOf('/v1')
+  return v1Idx > 0 ? stripped.slice(v1Idx) : '/v1'
+}
+
+function normaliseBaseUrl(baseUrl: string): string {
+  if (!isUnixBaseUrl(baseUrl)) return baseUrl
+  // The SDK requires a real-looking URL to compute the request path.
+  // The host part is bogus — our custom fetch ignores it and uses
+  // the Unix socket instead.
+  return `http://localhost${urlPathSuffix(baseUrl)}`
+}
+
+function makeFetchFor(baseUrl: string): typeof fetch | undefined {
+  if (!isUnixBaseUrl(baseUrl)) return undefined
+  const socketPath = unixSocketPath(baseUrl)
+  const agent = new HttpAgent({ socketPath } as unknown as ConstructorParameters<typeof HttpAgent>[0])
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const parsed = new URL(url)
+    const method = init?.method ?? 'GET'
+    const headers: Record<string, string> = {}
+    if (init?.headers) {
+      const h = new Headers(init.headers)
+      h.forEach((v, k) => {
+        headers[k] = v
+      })
+    }
+    return await new Promise<Response>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          method,
+          path: parsed.pathname + parsed.search,
+          headers,
+          agent,
+        },
+        (res) => {
+          const respHeaders = new Headers()
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (typeof v === 'string') respHeaders.set(k, v)
+            else if (Array.isArray(v)) respHeaders.set(k, v.join(', '))
+          }
+          // Wrap the IncomingMessage in a ReadableStream so the
+          // Vercel AI SDK gets the SSE chunks as they arrive,
+          // instead of after the upstream closes the connection.
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              res.on('data', (b: Buffer) => controller.enqueue(new Uint8Array(b)))
+              res.on('end', () => controller.close())
+              res.on('error', (err) => controller.error(err))
+            },
+            cancel() {
+              res.destroy()
+            },
+          })
+          resolve(
+            new Response(body, {
+              status: res.statusCode ?? 502,
+              headers: respHeaders,
+            }),
+          )
+        },
+      )
+      req.on('error', reject)
+      if (init?.body) {
+        if (typeof init.body === 'string') req.end(init.body)
+        else if (init.body instanceof Uint8Array) req.end(Buffer.from(init.body))
+        else req.end(String(init.body))
+      } else {
+        req.end()
+      }
+    })
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -215,7 +318,11 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  const provider = createOpenAI({ baseURL: BASE_URL, apiKey: API_KEY })
+  const provider = createOpenAI({
+    baseURL: normaliseBaseUrl(BASE_URL),
+    apiKey: API_KEY,
+    fetch: makeFetchFor(BASE_URL),
+  })
   const hasTools = config.maxTurns > 1
   const system = buildSystem(config, hasTools)
 
