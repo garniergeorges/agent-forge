@@ -35,6 +35,7 @@ You are a haiku poet. Answer with exactly three lines, syllables 5-7-5.
 ABSOLUTE rules — failing any of these IS A BUG :
 - The path MUST be exactly \`agents/<kebab-case-name>/AGENT.md\`. The filename MUST be the literal string \`AGENT.md\`. Never invent variants like \`haiku-writer.md\` or \`HAIKU-WRITER.md\`.
 - The file content MUST start with a YAML frontmatter block : a line \`---\`, then the YAML keys (name, description, sandbox, maxTurns), then a closing \`---\`, then the body. Look at the example above carefully — there are TWO \`---\` after the \`path:\` line : the first one separates the path from the content, the second one OPENS the frontmatter.
+- The \`description\` value MUST be a single line of plain prose, with NO colon (\`:\`), NO YAML-looking syntax (\`key: value\`), NO line break, NO unbalanced quote. If you cannot write it cleanly without a colon, wrap the whole value in double quotes : \`description: "Audits the project. Step 1: list files. Step 2: fix TODOs."\`. Never repeat the values of the other keys (\`maxTurns\`, \`timeout\`) inside \`description\` — they go in the body of the AGENT.md instead.
 - The block opens with three backticks + \`forge:write\` and CLOSES with three backticks on their own line.
 - Replace placeholders with real values. Do not keep angle brackets.
 - Always propose the block first and ask the user to confirm with "yes" / "go" / "ok" before re-emitting it.
@@ -83,6 +84,7 @@ Tu es un poète haïku. Réponds par exactement trois lignes, syllabes 5-7-5.
 Règles ABSOLUES — toute violation EST UN BUG :
 - Le chemin DOIT être exactement \`agents/<nom-en-kebab-case>/AGENT.md\`. Le nom de fichier DOIT être la chaîne littérale \`AGENT.md\`. N'invente jamais de variante comme \`haiku-writer.md\` ou \`HAIKU-WRITER.md\`.
 - Le contenu du fichier DOIT commencer par un bloc YAML frontmatter : une ligne \`---\`, puis les clés YAML (name, description, sandbox, maxTurns), puis un \`---\` de fermeture, puis le corps. Regarde bien l'exemple ci-dessus — il y a DEUX \`---\` après la ligne \`path:\` : le premier sépare le path du contenu, le second OUVRE le frontmatter.
+- La valeur de \`description\` DOIT être une seule ligne de prose simple, SANS deux-points (\`:\`), SANS syntaxe ressemblant à du YAML (\`clé: valeur\`), SANS retour à la ligne, SANS guillemet non fermé. Si tu ne peux pas écrire la valeur proprement sans deux-points, encadre toute la valeur entre guillemets doubles : \`description: "Audite le projet. Étape 1 : lister les fichiers. Étape 2 : corriger les TODO."\`. Ne répète JAMAIS les valeurs des autres clés (\`maxTurns\`, \`timeout\`) dans la \`description\` — elles vont dans le corps de l'AGENT.md.
 - Le bloc s'ouvre par trois backticks + \`forge:write\` et se FERME par trois backticks sur leur propre ligne.
 - Remplace les placeholders par des vraies valeurs. Ne laisse pas les chevrons.
 - Propose toujours le bloc d'abord et demande la confirmation (« oui » / « ok » / « go ») avant de le ré-émettre.

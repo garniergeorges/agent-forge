@@ -144,17 +144,57 @@ export type RunActionExecution = {
 
 export type ActionExecution = WriteActionExecution | RunActionExecution
 
+function quoteUnsafeDescription(content: string): string {
+  // Small models commonly write a `description` value containing a colon
+  // (e.g. "Étape 1 : ..." or "...timeout: 60s..."), which YAML mis-parses
+  // as a nested mapping and chokes the whole frontmatter. Detect that case
+  // and wrap the value in double quotes ; the parser then reads it as a
+  // plain string.
+  const lines = content.split('\n')
+  let inFrontmatter = false
+  let fmFenceCount = 0
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] as string
+    if (line.trim() === '---') {
+      fmFenceCount += 1
+      inFrontmatter = fmFenceCount === 1
+      if (fmFenceCount === 2) break
+      continue
+    }
+    if (!inFrontmatter) continue
+    const m = /^(\s*description\s*:\s*)(.*)$/.exec(line)
+    if (!m) continue
+    const prefix = m[1] as string
+    const value = (m[2] as string).trim()
+    if (value.length === 0) continue
+    // Already quoted ? leave it alone.
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      continue
+    }
+    if (!value.includes(':')) continue
+    // Escape any embedded double quotes so the wrap stays valid.
+    const safe = value.replace(/"/g, '\\"')
+    lines[i] = `${prefix}"${safe}"`
+  }
+  return lines.join('\n')
+}
+
 function normalizeAgentMd(content: string): string {
   // Small models often confuse the protocol separator (`---` between path
   // and content) with the YAML frontmatter opener and forget to write a
   // leading `---`. If the content looks like raw frontmatter (starts with a
   // recognized key), prepend `---` so it parses cleanly.
   const trimmed = content.replace(/^\s+/, '')
-  if (trimmed.startsWith('---')) return content
-  if (/^(name|description|model|sandbox|maxTurns)\s*:/m.test(trimmed)) {
-    return `---\n${content.replace(/^\s+/, '')}`
+  let normalized = content
+  if (!trimmed.startsWith('---')) {
+    if (/^(name|description|model|sandbox|maxTurns)\s*:/m.test(trimmed)) {
+      normalized = `---\n${content.replace(/^\s+/, '')}`
+    }
   }
-  return content
+  return quoteUnsafeDescription(normalized)
 }
 
 const AGENT_PATH_RE = /^(agents\/[a-z][a-z0-9-]*)\/[^/]+$/
