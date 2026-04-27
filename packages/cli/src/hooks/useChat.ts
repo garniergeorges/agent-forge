@@ -10,12 +10,19 @@
 // Builder code blocks (```forge:*) are extracted into actions and STRIPPED
 // from the assistant's textual reply before that reply lands in `messages`.
 
-import { type ChatMessage, streamBuilder } from '@agent-forge/core/builder'
+import {
+  type ChatMessage,
+  loadSkillCatalog,
+  matchSkillForMessage,
+  runScaffoldAndRun,
+  streamBuilder,
+} from '@agent-forge/core/builder'
 import { launchAgent } from '@agent-forge/tools-core'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   type Action,
   type RunAction,
+  type SkillAction,
   type WriteAction,
   nextActionId,
 } from '../actions/types.ts'
@@ -63,7 +70,10 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
-function actionFromParsed(parsed: ParsedAction): Action {
+function actionFromParsed(
+  parsed: ParsedAction,
+  skillDescriptionFor: (name: string) => string,
+): Action {
   if (parsed.kind === 'write') {
     return {
       id: nextActionId(),
@@ -74,14 +84,25 @@ function actionFromParsed(parsed: ParsedAction): Action {
       createdAt: nowIso(),
     }
   }
+  if (parsed.kind === 'run') {
+    return {
+      id: nextActionId(),
+      kind: 'run',
+      status: 'proposed',
+      agent: parsed.agent,
+      prompt: parsed.prompt,
+      createdAt: nowIso(),
+      output: '',
+    }
+  }
+  // skill : auto-running, the executor resolves the body synchronously.
   return {
     id: nextActionId(),
-    kind: 'run',
-    status: 'proposed',
-    agent: parsed.agent,
-    prompt: parsed.prompt,
+    kind: 'skill',
+    status: 'running',
+    skill: parsed.skill,
+    description: skillDescriptionFor(parsed.skill),
     createdAt: nowIso(),
-    output: '',
   }
 }
 
@@ -94,10 +115,17 @@ function parsedFromAction(action: Action): ParsedAction {
       raw: '',
     }
   }
+  if (action.kind === 'run') {
+    return {
+      kind: 'run',
+      agent: action.agent,
+      prompt: action.prompt,
+      raw: '',
+    }
+  }
   return {
-    kind: 'run',
-    agent: action.agent,
-    prompt: action.prompt,
+    kind: 'skill',
+    skill: action.skill,
     raw: '',
   }
 }
@@ -116,6 +144,8 @@ export function useChat(lang: Lang): {
   pending: Action | null
   approvePending: () => void
   declinePending: () => void
+  promptDraft: string
+  setPromptDraft: (value: string) => void
 } {
   const [state, setState] = useState<ChatState>({
     messages: [],
@@ -125,6 +155,35 @@ export function useChat(lang: Lang): {
   })
   const [busy, setBusy] = useState(false)
   const [scrollOffset, setScrollOffset] = useState(0)
+  // Skill catalog : loaded once at hook init, kept in a memo so callbacks
+  // get a stable reference. Built-ins ship with the package ; users can
+  // drop SKILL.md into ~/.agent-forge/skills/ to extend.
+  const skillCatalog = useMemo(() => loadSkillCatalog(), [])
+  const skillEntries = useMemo(
+    () =>
+      skillCatalog.skills.map((s) => ({
+        name: s.name,
+        description: s.description,
+        triggers: s.triggers,
+      })),
+    [skillCatalog],
+  )
+  const resolveSkillBody = useCallback(
+    (name: string): string | null => skillCatalog.byName.get(name)?.body ?? null,
+    [skillCatalog],
+  )
+  const skillDescriptionFor = useCallback(
+    (name: string): string =>
+      skillCatalog.byName.get(name)?.description ?? '(unknown skill)',
+    [skillCatalog],
+  )
+  // Lifted out of Welcome so App can know when the input is empty (and
+  // thus capture Tab for Mission Control focus without stealing keys
+  // from the prompt).
+  const [promptDraft, setPromptDraftState] = useState('')
+  const setPromptDraft = useCallback((value: string) => {
+    setPromptDraftState(value)
+  }, [])
   // Buffer des messages cachés mais toujours envoyés au LLM dans `send`.
   // `/clear` y déplace les messages visibles (vue vide, contexte préservé) ;
   // `/reset` le purge. Stocké en ref pour ne pas redéclencher de rendu.
@@ -278,6 +337,95 @@ export function useChat(lang: Lang): {
       }))
       setBusy(true)
 
+      // Server-side skill matching : if a trigger phrase appears in the
+      // user message, dispatch to the dedicated runner instead of the
+      // generic streaming flow. The runner makes two narrow LLM calls
+      // (one per artefact) so small models keep the AGENT.md and the
+      // run prompt cleanly separated.
+      const matched = matchSkillForMessage(prompt, skillCatalog.skills)
+      if (matched && matched.name === 'scaffold-and-run') {
+        const skillCard: SkillAction = {
+          id: nextActionId(),
+          kind: 'skill',
+          status: 'running',
+          skill: matched.name,
+          description: matched.description,
+          createdAt: nowIso(),
+        }
+        setState((prev) => ({
+          ...prev,
+          streaming: null,
+          actions: [...prev.actions, skillCard],
+        }))
+        try {
+          const result = await runScaffoldAndRun({
+            userMessage: prompt,
+            lang,
+          })
+          if (!result) {
+            updateAction(skillCard.id, {
+              status: 'failed',
+              error: 'skill runner produced no usable output',
+              finishedAt: nowIso(),
+            })
+            setBusy(false)
+            return
+          }
+          // Mark the skill as done and surface a write + run pair as
+          // proposed cards. The user approves them in order via the
+          // permission dialog.
+          updateAction(skillCard.id, {
+            status: 'done',
+            body: matched.body,
+            finishedAt: nowIso(),
+          })
+          const writeCard: WriteAction = {
+            id: nextActionId(),
+            kind: 'write',
+            status: 'proposed',
+            path: `agents/${result.agentName}/AGENT.md`,
+            content: result.agentMdContent,
+            createdAt: nowIso(),
+          }
+          const runCard: RunAction = {
+            id: nextActionId(),
+            kind: 'run',
+            status: 'proposed',
+            agent: result.agentName,
+            prompt: result.runPrompt,
+            createdAt: nowIso(),
+            output: '',
+          }
+          // Final assistant turn : one short prose sentence so the user
+          // sees in the conversation that the skill fired.
+          const proseTurn: ChatTurn = {
+            id: nextId(),
+            role: 'assistant',
+            content:
+              lang === 'fr'
+                ? `Je charge la skill ${matched.name} : un AGENT.md à approuver, puis l'exécution.`
+                : `Loading skill ${matched.name} : one AGENT.md to approve, then the run.`,
+          }
+          persist(proseTurn)
+          setState((prev) => ({
+            ...prev,
+            messages: [...prev.messages, proseTurn],
+            actions: [...prev.actions, writeCard, runCard],
+          }))
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          updateAction(skillCard.id, {
+            status: 'failed',
+            error: msg,
+            finishedAt: nowIso(),
+          })
+          setState((prev) => ({ ...prev, error: msg }))
+        } finally {
+          setBusy(false)
+        }
+        return
+      }
+
       try {
         const history: ChatMessage[] = [
           ...hiddenHistoryRef.current
@@ -296,7 +444,11 @@ export function useChat(lang: Lang): {
         ]
 
         let acc = ''
-        for await (const chunk of streamBuilder({ messages: history, lang })) {
+        for await (const chunk of streamBuilder({
+          messages: history,
+          lang,
+          skills: skillEntries,
+        })) {
           acc += chunk
           setState((prev) =>
             prev.streaming
@@ -309,6 +461,10 @@ export function useChat(lang: Lang): {
         const blocks = findActionBlocks(acc)
         const parseErrors: ChatTurn[] = []
         const newActions: Action[] = []
+        // Skill bodies executed inline get appended to the assistant turn
+        // as a system message so the next builder turn sees the full
+        // instructions.
+        const skillSystemTurns: ChatTurn[] = []
         for (const block of blocks) {
           if (!block.ok) {
             parseErrors.push({
@@ -316,8 +472,42 @@ export function useChat(lang: Lang): {
               role: 'system',
               content: `✗ action skipped : ${block.error}`,
             })
+            continue
+          }
+          const action = actionFromParsed(block.action, skillDescriptionFor)
+          if (action.kind === 'skill') {
+            // Resolve synchronously and finalise the card state in the
+            // same render — skills are local, free, never partial.
+            const exec = executeAction(block.action, {
+              resolveSkill: resolveSkillBody,
+            })
+            if (exec.kind === 'skill' && exec.result.ok) {
+              const finalised: SkillAction = {
+                ...action,
+                status: 'done',
+                body: exec.result.body,
+                finishedAt: nowIso(),
+              }
+              newActions.push(finalised)
+              skillSystemTurns.push({
+                id: nextId(),
+                role: 'system',
+                content: `[skill:${action.skill}] ${exec.result.body}`,
+              })
+            } else {
+              const err =
+                exec.kind === 'skill' && !exec.result.ok
+                  ? exec.result.error
+                  : 'unknown error'
+              newActions.push({
+                ...action,
+                status: 'failed',
+                error: err,
+                finishedAt: nowIso(),
+              })
+            }
           } else {
-            newActions.push(actionFromParsed(block.action))
+            newActions.push(action)
           }
         }
         const proseOnly = stripActionBlocks(acc)
@@ -327,12 +517,14 @@ export function useChat(lang: Lang): {
         }
         persist(finalAssistant)
         for (const e of parseErrors) persist(e)
+        for (const s of skillSystemTurns) persist(s)
         setState((prev) => ({
           ...prev,
           messages: [
             ...prev.messages,
             ...(proseOnly.length > 0 ? [finalAssistant] : []),
             ...parseErrors,
+            ...skillSystemTurns,
           ],
           streaming: null,
           error: null,
@@ -349,7 +541,7 @@ export function useChat(lang: Lang): {
         setBusy(false)
       }
     },
-    [state.messages, lang],
+    [state.messages, lang, skillCatalog, skillEntries, updateAction],
   )
 
   return {
@@ -366,5 +558,7 @@ export function useChat(lang: Lang): {
     pending: headPending,
     approvePending,
     declinePending,
+    promptDraft,
+    setPromptDraft,
   }
 }

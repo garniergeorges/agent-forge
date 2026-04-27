@@ -7,7 +7,7 @@
   **Forge, run, and orchestrate sandboxed LLM agents.**
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-  ![Status: P3 done](https://img.shields.io/badge/status-P3%20done-green)
+  ![Status: P6 done](https://img.shields.io/badge/status-P6%20done-green)
   ![Stack: TypeScript + Bun](https://img.shields.io/badge/stack-TypeScript_+_Bun-3178c6)
 
   🇬🇧 English version · [🇫🇷 Version française](./README.fr.md)
@@ -16,7 +16,7 @@
 
 ---
 
-> 🚧 **Status — POC, milestone P3 reached.** You can now `bun run forge`, describe an agent in plain English or French, watch the builder draft the `AGENT.md`, approve it, then ask the builder to run that agent — it spins up its own Docker container, streams the output, and tears the sandbox down. Next milestone : P4 — native tools (Bash, FileRead, FileEdit, FileWrite, Grep, Glob).
+> 🚧 **Status — POC, milestones P1 → P6 reached.** You can now `bun run forge`, describe an agent in plain English or French, watch the builder draft the `AGENT.md`, approve it, then ask the builder to run that agent — it spins up its own Docker container with **six native tools** (Bash, FileRead, FileEdit, FileWrite, Grep, Glob) sandboxed under `/workspace`, streams the output, and tears the sandbox down. Recurring orchestration patterns are handled by **skills** : drop a `SKILL.md` in `~/.agent-forge/skills/` (or use the built-in `scaffold-and-run`) and the CLI auto-dispatches when a trigger phrase appears in your message. Next milestone : P5 — hardened sandbox + artifact extraction.
 
 ## What is Agent Forge ?
 
@@ -35,9 +35,9 @@ The builder is the only conversational surface. Sub-agents are spawned on demand
 | **P1** | Hello agent in Docker (host script ↔ container ↔ LLM round-trip) | ✅ done |
 | **P2** | Conversational CLI (REPL Ink, EN/FR, slash commands, provider switch) | ✅ done |
 | **P3** | Builder writes `AGENT.md`, asks for permission, launches the agent in a fresh container, streams its output | ✅ done |
-| P4 | Six native tools (Bash, FileRead, FileEdit, FileWrite, Grep, Glob) usable from inside the sandbox | next |
-| P5 | Hardened sandbox + artifact extraction back to host | |
-| P6 | Skills enriched (project scaffolding, audits, fixes) | |
+| **P4** | Six native tools sandboxed under `/workspace` : Bash, FileWrite, FileRead, FileEdit, Grep, Glob ; runtime tool-loop with `maxTurns` | ✅ done |
+| **P6** | Skill layer : `SKILL.md` format, catalog (built-in + `~/.agent-forge/skills/`), server-side trigger matching, two-call runner (one for AGENT.md, one for the run prompt) | ✅ done |
+| P5 | Hardened sandbox + persistent agents (`docker exec`) + artifact extraction back to host | next |
 | P7 | `TEAM.md` — coordinated multi-agent runs | |
 | P8 | Pixel-art dashboard (live agent activity) | |
 | P9 | ★ POC validated : Next.js + Laravel + QA demo end-to-end | |
@@ -148,6 +148,36 @@ You can also switch on the fly inside the REPL : `/provider mistral`, `/model mi
 
 Every session is persisted to `~/.agent-forge/sessions/<id>/transcript.jsonl`. Use `/sessions` to list, `/session` to show the current id.
 
+## Native tools (inside the agent sandbox)
+
+Agents launched by the builder run inside a disposable container with `/workspace` mounted as their writable root. Six native tools are exposed and called via fenced `forge:*` blocks the agent emits in its reply :
+
+| Tag | Tool | What it does |
+|---|---|---|
+| `forge:bash` | Bash | `bash -lc <command>` inside `/workspace`, 30 s default timeout (max 120 s), output clipped at 16 KB |
+| `forge:write` | FileWrite | Create or overwrite a file under `/workspace`, parent dirs auto-created |
+| `forge:read` | FileRead | Line-based offset/limit, 16 KB clip, fails on non-regular files |
+| `forge:edit` | FileEdit | Exact-substring patch ; refuses ambiguous matches unless `replaceAll: true` |
+| `forge:grep` | Grep | Pure JS regex over an optional glob filter, skips binaries, 200 hits cap |
+| `forge:glob` | Glob | Hand-rolled `*` / `**` / `?` matcher, 200 results cap |
+
+The runtime parses one block per turn, executes it, feeds the structured result back as a system message, and loops up to `maxTurns` (capped at 10). All tools are sandboxed : path traversal, null bytes and absolute paths outside `/workspace` are refused.
+
+Why a text-structured protocol instead of OpenAI `tool_calls` ? Local LLMs (MLX, llama.cpp) don't all honour native tool-use, and a single protocol across builder and agents is easier to debug — the raw stream stays human-readable.
+
+## Skills (recurring orchestration patterns)
+
+A single user message can mix two intents the LLM tends to collapse — "what the agent IS" and "what the agent should do RIGHT NOW". **Skills** keep them apart.
+
+A skill is a `SKILL.md` file with a YAML frontmatter (name, description, **triggers**, actions) and a markdown body of instructions. The CLI loads skills from two sources :
+
+- built-in : shipped under `packages/core/src/builder/skills/`
+- user : drop a file into `~/.agent-forge/skills/<name>.md` (or `<name>/SKILL.md` for grouped assets) and it overrides the built-in on name collision
+
+When you send a message, the CLI scans it server-side against every skill's trigger phrases (case-insensitive substring). If one matches, the skill **runner** takes over the turn : two narrow LLM calls, one for the AGENT.md (generic role only), one for the run prompt (the concrete task), then both blocks land as PROPOSED cards in Mission Control. You approve them in order. The LLM never has to make the meta-decision.
+
+Built-in `scaffold-and-run` ships today : it triggers on words like `audite`, `teste`, `lance puis`, `audit`, `test it`, `then run`, `create and run`. Type `/skills` in the REPL to list what's available.
+
 ## Useful slash commands
 
 ```
@@ -159,8 +189,17 @@ Every session is persisted to `~/.agent-forge/sessions/<id>/transcript.jsonl`. U
 /model <name>        switch model on the active provider
 /session             show the current session id
 /sessions            list persisted sessions
+/skills              list available skills (built-in + user)
 /exit                quit
 ```
+
+## Mission Control keyboard
+
+- `Tab` / `Shift+Tab` — cycle focus through action cards
+- `Enter` — open the focused card in a full-screen detail view
+- `Esc` — drop the focus (or close the detail view)
+- `↑↓ / PgUp / PgDn / g / G` — scroll inside the detail view
+- `Ctrl+E` — return the chat transcript to live mode
 
 ## Architecture
 
@@ -170,23 +209,32 @@ Every session is persisted to `~/.agent-forge/sessions/<id>/transcript.jsonl`. U
 │                                                             │
 │  forge CLI (= the builder LLM)                              │
 │    ├─ Ink TUI (Mission Control + conversation)              │
-│    ├─ AGENT.md parser (Zod-validated frontmatter)           │
-│    ├─ FileWrite tool (sandboxed under ~/.agent-forge)       │
+│    ├─ Skill catalog : built-in + ~/.agent-forge/skills/     │
+│    ├─ Server-side trigger matcher + skill runner            │
+│    ├─ AGENT.md / SKILL.md parsers (Zod-validated)           │
+│    ├─ FileWrite tool (host, sandboxed under ~/.agent-forge) │
 │    └─ DockerLaunch tool (spawns one-shot containers)        │
 └────────────────────┬────────────────────────────────────────┘
                      │ docker run --rm -i
+                     │   -v <agent>/AGENT.md:/agent/AGENT.md:ro
+                     │   -v <runtime-bundle>:/runtime:ro
+                     │   -v <per-run-host-dir>:/workspace
                      ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  CONTAINER (one per agent run, disposable)                  │
 │  agent-forge/base:latest                                    │
 │                                                             │
 │  Node runtime ── reads /agent/AGENT.md as system prompt     │
-│              └─ pipes the user prompt through stdin         │
-│              └─ streams the LLM answer to stdout            │
+│              ├─ pipes the user prompt through stdin         │
+│              ├─ streams the LLM answer to stdout            │
+│              └─ tool loop : forge:bash / write / read /     │
+│                 edit / grep / glob, capped at maxTurns      │
+│                                                             │
+│  /workspace ── writable scratchpad, kept on host after exit │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Long-running agents (`docker exec`) and multi-agent teams (one container, many processes coordinating via [`claude-presence`](https://github.com/garniergeorges/claude-presence)) land in P5 and P7.
+Persistent agents (`docker exec` instead of `docker run --rm`) and multi-agent teams (one container, many processes coordinating via [`claude-presence`](https://github.com/garniergeorges/claude-presence)) land in P5 and P7.
 
 ## Tech stack
 
@@ -203,14 +251,20 @@ Long-running agents (`docker exec`) and multi-agent teams (one container, many p
 ```
 agent-forge/
 ├── packages/
-│   ├── core/             # builder LLM, AGENT.md schema, provider config
-│   ├── cli/              # the `forge` binary (Ink REPL + Mission Control)
-│   ├── runtime/          # bundle that runs inside each agent container
-│   └── tools-core/       # FileWrite, DockerLaunch, …
-├── docker/               # Dockerfiles
-├── scripts/              # build helpers (docker, hooks)
-├── demo-sprites/         # interactive mockup (UX reference)
-└── assets/               # README images
+│   ├── core/                       # builder LLM, schemas, skill layer
+│   │   └── src/builder/skills/     # built-in SKILL.md files
+│   ├── cli/                        # the `forge` binary (Ink REPL + Mission Control)
+│   ├── runtime/                    # bundle that runs inside each agent container
+│   │   └── src/tool-protocol.ts    # forge:* parser + result renderers
+│   └── tools-core/
+│       ├── file-write.ts           # host-side FileWrite (~/.agent-forge)
+│       ├── docker-launch.ts        # one-shot container launcher
+│       └── runtime/                # in-container tools : bash, file-write,
+│                                   #   file-read, file-edit, grep, glob
+├── docker/                         # Dockerfiles
+├── scripts/                        # build helpers (docker, hooks)
+├── demo-sprites/                   # interactive mockup (UX reference)
+└── assets/                         # README images
 ```
 
 ## Genesis

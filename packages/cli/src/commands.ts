@@ -5,6 +5,7 @@
 import {
   getCurrentBaseURL,
   getCurrentModelName,
+  loadSkillCatalog,
   setProviderOverride,
 } from '@agent-forge/core/builder'
 import {
@@ -54,6 +55,11 @@ function helpLines(lang: Lang): string[] {
     }`,
     `  /sessions           ${
       lang === 'fr' ? 'liste les sessions persistées' : 'list persisted sessions'
+    }`,
+    `  /skills             ${
+      lang === 'fr'
+        ? 'liste les skills disponibles'
+        : 'list available skills'
     }`,
   ]
 }
@@ -177,6 +183,23 @@ export function runCommand(
         lines.push(
           `  ${r.id.slice(0, 30)}${r.id.length > 30 ? '…' : ''}  ${r.turns.toString()} turns`,
         )
+      }
+      return { lines }
+    }
+
+    case '/skills': {
+      const catalog = loadSkillCatalog()
+      if (catalog.skills.length === 0) {
+        return { lines: [lang === 'fr' ? '(aucune skill)' : '(no skills)'] }
+      }
+      const lines = [
+        lang === 'fr'
+          ? `${catalog.skills.length.toString()} skill(s) :`
+          : `${catalog.skills.length.toString()} skill(s) :`,
+      ]
+      for (const s of catalog.skills) {
+        const tag = s.source === 'builtin' ? '·built-in·' : '·user·'
+        lines.push(`  ${s.name}  ${tag}  ${s.description}`)
       }
       return { lines }
     }
