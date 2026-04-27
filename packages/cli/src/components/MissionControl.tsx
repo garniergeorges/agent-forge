@@ -10,7 +10,13 @@
 
 import { Box, Text } from 'ink'
 import React from 'react'
-import type { Action, ActionStatus, RunAction, WriteAction } from '../actions/types.ts'
+import type {
+  Action,
+  ActionStatus,
+  RunAction,
+  SkillAction,
+  WriteAction,
+} from '../actions/types.ts'
 import { C } from '../theme/colors.ts'
 import {
   type HighlightedLine,
@@ -196,6 +202,38 @@ function RunCard({
   )
 }
 
+function SkillCard({
+  action,
+  focused,
+}: {
+  action: SkillAction
+  focused: boolean
+}): React.JSX.Element {
+  return (
+    <CardFrame status={action.status} focused={focused}>
+      <Box>
+        <FocusMarker focused={focused} />
+        <StatusBadge status={action.status} />
+        <Text color={C.grey} dimColor>{'  skill  '}</Text>
+        <Text color={C.white}>{action.skill}</Text>
+      </Box>
+      <Box marginTop={1} paddingLeft={2}>
+        <Text color={C.greyLight}>{action.description}</Text>
+      </Box>
+      {action.status === 'done' ? (
+        <Box marginTop={1} paddingLeft={2}>
+          <Text color={C.green}>{'  ✓ skill loaded into context'}</Text>
+        </Box>
+      ) : null}
+      {action.status === 'failed' && action.error ? (
+        <Box marginTop={1} paddingLeft={2}>
+          <Text color={C.red}>{`  ✗ ${action.error}`}</Text>
+        </Box>
+      ) : null}
+    </CardFrame>
+  )
+}
+
 export function MissionControl({
   actions,
   focusedId,
@@ -230,11 +268,9 @@ export function MissionControl({
       </Box>
       {actions.map((a) => {
         const focused = a.id === focusedId
-        return a.kind === 'write' ? (
-          <WriteCard key={a.id} action={a} focused={focused} />
-        ) : (
-          <RunCard key={a.id} action={a} focused={focused} />
-        )
+        if (a.kind === 'write') return <WriteCard key={a.id} action={a} focused={focused} />
+        if (a.kind === 'run') return <RunCard key={a.id} action={a} focused={focused} />
+        return <SkillCard key={a.id} action={a} focused={focused} />
       })}
     </Box>
   )

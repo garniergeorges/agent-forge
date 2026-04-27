@@ -8,7 +8,7 @@
 
 import { Box, Text, useInput } from 'ink'
 import React, { useState } from 'react'
-import type { Action, ActionStatus, RunAction, WriteAction } from '../actions/types.ts'
+import type { Action, ActionStatus } from '../actions/types.ts'
 import { C } from '../theme/colors.ts'
 import {
   type HighlightedLine,
@@ -39,6 +39,23 @@ function buildLines(action: Action): HighlightedLine[] {
   if (action.kind === 'write') {
     return highlightYamlText(action.content)
   }
+  if (action.kind === 'skill') {
+    const out: HighlightedLine[] = []
+    out.push([{ text: '── description ──', color: C.grey, dim: true }])
+    out.push(...highlightPlain(action.description))
+    out.push([{ text: '' }])
+    out.push([{ text: '── instructions injected into context ──', color: C.grey, dim: true }])
+    if (action.body && action.body.length > 0) {
+      out.push(...highlightPlain(action.body))
+    } else {
+      out.push([{ text: '(skill body not loaded yet)', color: C.grey, dim: true }])
+    }
+    if (action.status === 'failed' && action.error) {
+      out.push([{ text: '' }])
+      out.push([{ text: `✗ ${action.error}`, color: C.red }])
+    }
+    return out
+  }
   // run : prompt then output
   const out: HighlightedLine[] = []
   out.push([{ text: '── prompt ──', color: C.grey, dim: true }])
@@ -59,6 +76,7 @@ function buildLines(action: Action): HighlightedLine[] {
 
 function headerFor(action: Action): string {
   if (action.kind === 'write') return `write  ${action.path}`
+  if (action.kind === 'skill') return `skill  ${action.skill}`
   return `run  ${action.agent}`
 }
 

@@ -142,6 +142,66 @@ ${ACTION_BLOCK_FR}
 
 Réponds toujours en français.`
 
-export function getBuilderSystemPrompt(lang: BuilderLang): string {
-  return lang === 'fr' ? FR : EN
+// Skill catalog metadata as injected into the system prompt. The body
+// of each skill is NOT included here — it would cost too many tokens
+// for skills the user never triggers. The LLM only sees the entry,
+// recognises a trigger, and emits a `forge:skill` block ; the CLI
+// then injects the body into the conversation as a system message,
+// so the next turn carries the full skill instructions.
+export type SkillCatalogEntry = {
+  name: string
+  description: string
+  triggers: string[]
+}
+
+const SKILLS_HEADER_EN = `
+
+AVAILABLE SKILLS :
+
+You have access to a catalog of skills — high-level behaviours that orchestrate multiple actions in one turn for recurring intents. To activate one, emit a fenced \`forge:skill\` block. The CLI will inject the skill's full instructions as a system message in the next turn, after which you follow them.
+
+\`\`\`forge:skill
+name: scaffold-and-run
+\`\`\`
+
+Choose a skill when the user's message matches its trigger phrases AND you would otherwise stop too early (e.g. only writing an AGENT.md when the user clearly also wants the agent to run with a specific task).
+
+Catalog :
+`
+
+const SKILLS_HEADER_FR = `
+
+SKILLS DISPONIBLES :
+
+Tu as accès à un catalogue de skills — des comportements de haut niveau qui orchestrent plusieurs actions dans le même tour pour des intentions récurrentes. Pour en activer une, émets un bloc \`forge:skill\` encadré. La CLI injectera les instructions complètes de la skill comme message système dans le tour suivant ; tu n'as plus qu'à les appliquer.
+
+\`\`\`forge:skill
+name: scaffold-and-run
+\`\`\`
+
+Choisis une skill quand le message utilisateur correspond à un de ses triggers ET que sans elle tu t'arrêterais trop tôt (par ex. n'écrire qu'un AGENT.md alors que l'utilisateur veut clairement aussi le lancer avec une tâche concrète).
+
+Catalogue :
+`
+
+function renderCatalog(entries: SkillCatalogEntry[]): string {
+  if (entries.length === 0) return ''
+  return entries
+    .map((s) => {
+      const triggers =
+        s.triggers.length > 0 ? ` — triggers : ${s.triggers.join(', ')}` : ''
+      return `- ${s.name} : ${s.description}${triggers}`
+    })
+    .join('\n')
+}
+
+export function getBuilderSystemPrompt(
+  lang: BuilderLang,
+  options: { skills?: SkillCatalogEntry[] } = {},
+): string {
+  const base = lang === 'fr' ? FR : EN
+  const entries = options.skills ?? []
+  if (entries.length === 0) return base
+  const header = lang === 'fr' ? SKILLS_HEADER_FR : SKILLS_HEADER_EN
+  return `${base}${header}${renderCatalog(entries)}`
 }

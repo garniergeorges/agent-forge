@@ -34,7 +34,23 @@ export type RunAction = {
   error?: string
 }
 
-export type Action = WriteAction | RunAction
+// Skill actions don't go through the permission dialog : loading a
+// skill is read-only and instant. We still surface them as cards so the
+// user sees, in Mission Control, that the builder is operating on a
+// recognised pattern instead of free-styling.
+export type SkillAction = {
+  id: string
+  kind: 'skill'
+  status: ActionStatus
+  skill: string
+  description: string // copied from the catalog at load time
+  body?: string // populated when status becomes 'done'
+  createdAt: string
+  finishedAt?: string
+  error?: string
+}
+
+export type Action = WriteAction | RunAction | SkillAction
 
 let counter = 0
 export function nextActionId(): string {
