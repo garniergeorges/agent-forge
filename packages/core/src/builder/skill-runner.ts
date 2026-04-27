@@ -14,8 +14,11 @@
 // work into two narrow calls forces the model to keep them apart.
 
 import { generateText } from 'ai'
+import { getLogger } from '../log/index.ts'
 import { getBuilderModel } from './provider.ts'
 import type { BuilderLang } from './system-prompt.ts'
+
+const log = getLogger('skillRunner')
 
 export type ScaffoldAndRunResult = {
   agentName: string
@@ -137,6 +140,11 @@ export async function runScaffoldAndRun(args: {
   const agentMdInstruction = buildAgentMdInstruction(args.lang)
   const runPromptInstruction = buildRunPromptInstruction(args.lang)
 
+  log.info('runScaffoldAndRun start', {
+    lang: args.lang,
+    userMessage: args.userMessage,
+  })
+
   // Call 1 : produce the AGENT.md.
   const agentMdResp = await generateText({
     model,
@@ -146,7 +154,18 @@ export async function runScaffoldAndRun(args: {
   })
   const agentMdContent = stripFences(agentMdResp.text)
   const agentName = extractAgentName(agentMdContent)
-  if (!agentName) return null
+  log.debug('call 1 — AGENT.md', {
+    agentName,
+    agentMdRaw: agentMdResp.text,
+    agentMdStripped: agentMdContent,
+  })
+  if (!agentName) {
+    log.warn('runScaffoldAndRun aborted', {
+      reason: 'no name extracted from AGENT.md',
+      content: agentMdContent,
+    })
+    return null
+  }
 
   // Call 2 : produce the run prompt.
   const runResp = await generateText({
@@ -156,7 +175,17 @@ export async function runScaffoldAndRun(args: {
     maxTokens: 400,
   })
   const runPrompt = stripFences(runResp.text)
-  if (runPrompt.length === 0) return null
+  log.debug('call 2 — run prompt', {
+    runPromptRaw: runResp.text,
+    runPromptStripped: runPrompt,
+  })
+  if (runPrompt.length === 0) {
+    log.warn('runScaffoldAndRun aborted', {
+      reason: 'empty run prompt',
+    })
+    return null
+  }
 
+  log.info('runScaffoldAndRun done', { agentName })
   return { agentName, agentMdContent, runPrompt }
 }

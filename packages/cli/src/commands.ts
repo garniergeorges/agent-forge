@@ -8,6 +8,7 @@ import {
   loadSkillCatalog,
   setProviderOverride,
 } from '@agent-forge/core/builder'
+import { currentLogPath, isLoggingEnabled } from '@agent-forge/core/log'
 import {
   type ForgeConfig,
   type Lang,
@@ -60,6 +61,11 @@ function helpLines(lang: Lang): string[] {
       lang === 'fr'
         ? 'liste les skills disponibles'
         : 'list available skills'
+    }`,
+    `  /log                ${
+      lang === 'fr'
+        ? "affiche le chemin du fichier de log courant (FORGE_DEBUG=1 pour activer)"
+        : 'show the current log file path (FORGE_DEBUG=1 to enable)'
     }`,
   ]
 }
@@ -185,6 +191,24 @@ export function runCommand(
         )
       }
       return { lines }
+    }
+
+    case '/log': {
+      if (!isLoggingEnabled()) {
+        return {
+          lines: [
+            lang === 'fr'
+              ? 'logging désactivé — relance avec FORGE_DEBUG=1 (ou FORGE_LOG_FILE=/path)'
+              : 'logging disabled — restart with FORGE_DEBUG=1 (or FORGE_LOG_FILE=/path)',
+          ],
+        }
+      }
+      const path = currentLogPath()
+      return {
+        lines: [
+          lang === 'fr' ? `log courant : ${path ?? '?'}` : `current log : ${path ?? '?'}`,
+        ],
+      }
     }
 
     case '/skills': {

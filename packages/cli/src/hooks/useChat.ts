@@ -17,6 +17,7 @@ import {
   runScaffoldAndRun,
   streamBuilder,
 } from '@agent-forge/core/builder'
+import { getLogger } from '@agent-forge/core/log'
 import { launchAgent } from '@agent-forge/tools-core'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import {
@@ -34,6 +35,8 @@ import {
 } from '../builder-actions.ts'
 import type { Lang } from '../config/store.ts'
 import { getCurrentSession } from '../session/store.ts'
+
+const log = getLogger('useChat')
 
 export type TurnRole = 'user' | 'assistant' | 'system'
 
@@ -320,6 +323,7 @@ export function useChat(lang: Lang): {
 
   const send = useCallback(
     async (prompt: string): Promise<void> => {
+      log.info('send', { prompt, lang })
       const userTurn: ChatTurn = { id: nextId(), role: 'user', content: prompt }
       const assistantTurn: ChatTurn = {
         id: nextId(),
@@ -343,6 +347,8 @@ export function useChat(lang: Lang): {
       // (one per artefact) so small models keep the AGENT.md and the
       // run prompt cleanly separated.
       const matched = matchSkillForMessage(prompt, skillCatalog.skills)
+      if (matched) log.info('skill matched', { skill: matched.name })
+      else log.debug('no skill matched')
       if (matched && matched.name === 'scaffold-and-run') {
         const skillCard: SkillAction = {
           id: nextActionId(),
@@ -459,6 +465,12 @@ export function useChat(lang: Lang): {
 
         // Extract any forge:* blocks BEFORE persisting the assistant text.
         const blocks = findActionBlocks(acc)
+        log.debug('parsed action blocks', {
+          count: blocks.length,
+          blocks: blocks.map((b) =>
+            b.ok ? { ok: true, kind: b.action.kind } : { ok: false, error: b.error },
+          ),
+        })
         const parseErrors: ChatTurn[] = []
         const newActions: Action[] = []
         // Skill bodies executed inline get appended to the assistant turn

@@ -19,12 +19,15 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { getLogger } from '@agent-forge/core/log'
 import {
   type AppliedSandboxConfig,
   applySandboxDefaults,
   parseAgentMd,
 } from '@agent-forge/core/types'
 import { FORGE_HOME } from './file-write.ts'
+
+const log = getLogger('dockerLaunch')
 
 export const DockerLaunchInputSchema = z.object({
   agent: z
@@ -167,14 +170,19 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       const parsed = parseAgentMd(raw)
       sandboxCfg = applySandboxDefaults(parsed.meta.sandbox)
     } catch (err) {
-      yield {
-        type: 'error',
-        error: `cannot read AGENT.md : ${err instanceof Error ? err.message : String(err)}`,
-      }
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error('agent.md parse failed', { agent: input.agent, error: msg })
+      yield { type: 'error', error: `cannot read AGENT.md : ${msg}` }
       return
     }
 
     mkdirSync(workspaceHostDir, { recursive: true })
+    log.info('launching', {
+      agent: input.agent,
+      containerName,
+      workspaceHostDir,
+      sandboxCfg,
+    })
 
     const args = [
       'run',
@@ -199,6 +207,7 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       '/runtime/runtime.mjs',
     ]
 
+    log.debug('docker spawn args', { containerName, args })
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] })
 
     const timeout = setTimeout(() => {
@@ -255,13 +264,16 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       }
       const exitCode = await exitPromise
       const stderr = stderrChunks.join('').trim()
-      if (stderr.length > 0) yield { type: 'stderr', text: stderr }
+      if (stderr.length > 0) {
+        log.warn('docker stderr', { containerName, stderr })
+        yield { type: 'stderr', text: stderr }
+      }
+      log.info('done', { containerName, exitCode })
       yield { type: 'done', exitCode }
     } catch (err) {
-      yield {
-        type: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      }
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error('runtime error', { containerName, error: msg })
+      yield { type: 'error', error: msg }
     } finally {
       clearTimeout(timeout)
       forceRemove()

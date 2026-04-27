@@ -203,6 +203,30 @@ La skill `scaffold-and-run` est livrée par défaut : elle se déclenche sur des
 - `↑↓ / PgUp / PgDn / g / G` — scroll dans la vue détail
 - `Ctrl+E` — retour live dans le transcript
 
+## Debug
+
+La TUI possède stdout, donc pas de `console.log` possible — Forge écrit dans un fichier de log structuré.
+
+```bash
+# Désactivé par défaut. Active via une de ces variables :
+FORGE_DEBUG=1 bun run forge                       # niveau debug → ~/.agent-forge/logs/forge-<pid>-<ts>.log
+FORGE_DEBUG=trace bun run forge                   # plus fin (system prompts, réponses LLM complètes)
+FORGE_LOG_FILE=/tmp/forge.log bun run forge       # chemin explicite
+
+# Dans le REPL :
+/log                                              # affiche le chemin du log courant
+```
+
+Le log est en JSON-lines, une entrée par ligne :
+
+```json
+{"t":"2026-04-27T22:30:00.000Z","level":"info","source":"useChat","msg":"send","data":{"prompt":"…"}}
+{"t":"2026-04-27T22:30:01.523Z","level":"info","source":"skillRunner","msg":"runScaffoldAndRun start"}
+{"t":"2026-04-27T22:30:04.812Z","level":"info","source":"dockerLaunch","msg":"launching","data":{"agent":"…","sandboxCfg":{…}}}
+```
+
+Greps utiles : `jq -r 'select(.level=="error")' forge-*.log`, ou `grep '"source":"dockerLaunch"' forge-*.log | jq`.
+
 ## Architecture
 
 ```

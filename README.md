@@ -203,6 +203,30 @@ Built-in `scaffold-and-run` ships today : it triggers on words like `audite`, `t
 - `↑↓ / PgUp / PgDn / g / G` — scroll inside the detail view
 - `Ctrl+E` — return the chat transcript to live mode
 
+## Debugging
+
+The TUI owns stdout, so we never `console.log` — instead Forge ships a structured file logger.
+
+```bash
+# Off by default. Either flag turns it on :
+FORGE_DEBUG=1 bun run forge                       # debug level → ~/.agent-forge/logs/forge-<pid>-<ts>.log
+FORGE_DEBUG=trace bun run forge                   # finer (system prompts, full LLM replies)
+FORGE_LOG_FILE=/tmp/forge.log bun run forge       # explicit path
+
+# Inside the REPL :
+/log                                              # prints the current log path
+```
+
+The log is JSON-lines, one entry per line :
+
+```json
+{"t":"2026-04-27T22:30:00.000Z","level":"info","source":"useChat","msg":"send","data":{"prompt":"…"}}
+{"t":"2026-04-27T22:30:01.523Z","level":"info","source":"skillRunner","msg":"runScaffoldAndRun start"}
+{"t":"2026-04-27T22:30:04.812Z","level":"info","source":"dockerLaunch","msg":"launching","data":{"agent":"…","sandboxCfg":{…}}}
+```
+
+Useful greps : `jq -r 'select(.level=="error")' forge-*.log`, or `grep '"source":"dockerLaunch"' forge-*.log | jq`.
+
 ## Architecture
 
 ```
