@@ -136,6 +136,64 @@ prompt
   })
 })
 
+describe('findActionBlocks (skill)', () => {
+  test('parses a forge:skill block with name: prefix', () => {
+    const md = `OK je charge une skill :
+
+\`\`\`forge:skill
+name: scaffold-and-run
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks.length).toBe(1)
+    expect(blocks[0]?.ok).toBe(true)
+    if (blocks[0]?.ok && blocks[0].action.kind === 'skill') {
+      expect(blocks[0].action.skill).toBe('scaffold-and-run')
+    }
+  })
+
+  test('parses a forge:skill block with bare name', () => {
+    const md = `\`\`\`forge:skill
+scaffold-and-run
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks[0]?.ok).toBe(true)
+    if (blocks[0]?.ok && blocks[0].action.kind === 'skill') {
+      expect(blocks[0].action.skill).toBe('scaffold-and-run')
+    }
+  })
+
+  test('rejects skill with non-kebab-case name', () => {
+    const md = `\`\`\`forge:skill
+name: ScaffoldAndRun
+\`\`\``
+    const blocks = findActionBlocks(md)
+    expect(blocks[0]?.ok).toBe(false)
+  })
+
+  test('executeAction(skill) resolves the body via the resolver', () => {
+    const exec = executeAction(
+      { kind: 'skill', skill: 'scaffold-and-run', raw: '' },
+      { resolveSkill: (name) => (name === 'scaffold-and-run' ? 'BODY' : null) },
+    )
+    expect(exec.kind).toBe('skill')
+    if (exec.kind === 'skill') {
+      expect(exec.result.ok).toBe(true)
+      if (exec.result.ok) expect(exec.result.body).toBe('BODY')
+    }
+  })
+
+  test('executeAction(skill) errors when resolver returns null', () => {
+    const exec = executeAction(
+      { kind: 'skill', skill: 'unknown', raw: '' },
+      { resolveSkill: () => null },
+    )
+    expect(exec.kind).toBe('skill')
+    if (exec.kind === 'skill') {
+      expect(exec.result.ok).toBe(false)
+    }
+  })
+})
+
 describe('executeAction (path coercion + agent validation)', () => {
   const validFrontmatter = `---
 name: ${TEST_AGENT}

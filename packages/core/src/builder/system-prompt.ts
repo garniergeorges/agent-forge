@@ -142,6 +142,56 @@ ${ACTION_BLOCK_FR}
 
 Réponds toujours en français.`
 
-export function getBuilderSystemPrompt(lang: BuilderLang): string {
-  return lang === 'fr' ? FR : EN
+// Skill catalog metadata as injected into the system prompt. The body
+// of each skill is NOT included here — it would cost too many tokens
+// for skills the user never triggers. The LLM only sees the entry,
+// recognises a trigger, and emits a `forge:skill` block ; the CLI
+// then injects the body into the conversation as a system message,
+// so the next turn carries the full skill instructions.
+export type SkillCatalogEntry = {
+  name: string
+  description: string
+  triggers: string[]
+}
+
+// Note : skill activation is now handled SERVER-SIDE by the CLI, not
+// by the LLM. Trigger matching, runner dispatch, and write+run
+// orchestration all happen in TypeScript before the LLM is even
+// called for the matched user message. This keeps the small models
+// out of the meta-decision business and makes the orchestration
+// deterministic.
+//
+// We still surface the skill catalog in the system prompt as a short
+// informational note, so the LLM doesn't get confused when a skill
+// card appears in Mission Control — it knows skills exist and that
+// they were dispatched on its behalf.
+
+const SKILLS_PREAMBLE_EN = `Skills available (auto-dispatched by the CLI when the user message matches a trigger ; you do NOT need to invoke them yourself) :
+`
+
+const SKILLS_PREAMBLE_FR = `Skills disponibles (déclenchées automatiquement par la CLI quand le message utilisateur correspond à un trigger ; tu n'as PAS à les invoquer toi-même) :
+`
+
+function renderCatalog(entries: SkillCatalogEntry[]): string {
+  if (entries.length === 0) return ''
+  return entries
+    .map((s) => {
+      const triggers =
+        s.triggers.length > 0
+          ? ` — triggers : ${s.triggers.map((t) => `"${t}"`).join(', ')}`
+          : ''
+      return `- ${s.name} : ${s.description}${triggers}`
+    })
+    .join('\n')
+}
+
+export function getBuilderSystemPrompt(
+  lang: BuilderLang,
+  options: { skills?: SkillCatalogEntry[] } = {},
+): string {
+  const base = lang === 'fr' ? FR : EN
+  const entries = options.skills ?? []
+  if (entries.length === 0) return base
+  const preamble = lang === 'fr' ? SKILLS_PREAMBLE_FR : SKILLS_PREAMBLE_EN
+  return `${base}\n\n${preamble}${renderCatalog(entries)}`
 }

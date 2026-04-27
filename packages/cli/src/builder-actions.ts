@@ -1,7 +1,7 @@
 // Parser + executor for the text-structured action protocol the builder
 // emits (see packages/core/src/builder/system-prompt.ts).
 //
-// Two block types are recognized :
+// Three block types are recognized :
 //
 //   ```forge:write
 //   path: <relative path under ~/.agent-forge/>
@@ -15,6 +15,10 @@
 //   <prompt sent to the agent>
 //   ```
 //
+//   ```forge:skill
+//   name: <kebab-case skill name>
+//   ```
+//
 // The closing fence is optional (small models sometimes forget the trailing
 // ```). When present, content stops there ; otherwise it extends to the
 // end of the message.
@@ -22,10 +26,10 @@
 import { parseAgentMd } from '@agent-forge/core/types'
 import { executeFileWrite } from '@agent-forge/tools-core'
 
-const FENCE_OPEN = /```forge:(write|run)\s*\n/g
+const FENCE_OPEN = /```forge:(write|run|skill)\s*\n/g
 // Pattern used to strip whole forge:* blocks (open + body + optional close)
 // from the assistant text so the chat transcript stays prose-only.
-const FENCE_BLOCK = /```forge:(?:write|run)\s*\n[\s\S]*?(?:\n```|$)/g
+const FENCE_BLOCK = /```forge:(?:write|run|skill)\s*\n[\s\S]*?(?:\n```|$)/g
 
 /** Remove every forge:write / forge:run block from a builder reply.
  * Used to keep the chat transcript free of action code — actions live in
@@ -48,7 +52,13 @@ export type ParsedRunAction = {
   raw: string
 }
 
-export type ParsedAction = ParsedWriteAction | ParsedRunAction
+export type ParsedSkillAction = {
+  kind: 'skill'
+  skill: string
+  raw: string
+}
+
+export type ParsedAction = ParsedWriteAction | ParsedRunAction | ParsedSkillAction
 
 export type ActionParseResult =
   | { ok: true; action: ParsedAction }
@@ -108,19 +118,42 @@ function parseRun(inner: string, raw: string): ActionParseResult {
   return { ok: true, action: { kind: 'run', agent, prompt, raw } }
 }
 
+function parseSkill(inner: string, raw: string): ActionParseResult {
+  // forge:skill expects a single key=value pair, optionally followed by a
+  // closing fence. Accept both `name: scaffold-and-run` (the documented
+  // form) and a bare line containing the name only — small models slip.
+  const firstLine = (inner.split('\n')[0] ?? '').trim()
+  const candidate = firstLine.startsWith('name:')
+    ? firstLine.slice('name:'.length).trim()
+    : firstLine
+  if (candidate.length === 0) {
+    return { ok: false, error: 'forge:skill block missing skill name', raw }
+  }
+  if (!/^[a-z][a-z0-9-]*$/.test(candidate)) {
+    return {
+      ok: false,
+      error: `forge:skill name must be kebab-case (got "${candidate}")`,
+      raw,
+    }
+  }
+  return { ok: true, action: { kind: 'skill', skill: candidate, raw } }
+}
+
 export function findActionBlocks(text: string): ActionParseResult[] {
   const out: ActionParseResult[] = []
   const matches = [...text.matchAll(FENCE_OPEN)]
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i]
     if (!m) continue
-    const kind = m[1] as 'write' | 'run'
+    const kind = m[1] as 'write' | 'run' | 'skill'
     const start = (m.index ?? 0) + m[0].length
     const closingIdx = text.indexOf('\n```', start)
     const end = closingIdx >= 0 ? closingIdx : text.length
     const inner = text.slice(start, end).replace(/\s+$/, '')
     const raw = text.slice(m.index ?? 0, end + (closingIdx >= 0 ? 4 : 0))
-    out.push(kind === 'write' ? parseWrite(inner, raw) : parseRun(inner, raw))
+    if (kind === 'write') out.push(parseWrite(inner, raw))
+    else if (kind === 'run') out.push(parseRun(inner, raw))
+    else out.push(parseSkill(inner, raw))
   }
   return out
 }
@@ -142,7 +175,18 @@ export type RunActionExecution = {
   result: { ok: false; error: string } | { ok: true }
 }
 
-export type ActionExecution = WriteActionExecution | RunActionExecution
+export type SkillActionExecution = {
+  kind: 'skill'
+  skill: string
+  // Skills are read-only : loading one cannot fail at exec time besides
+  // "skill not found in the catalog". The catalog is enforced upstream.
+  result: { ok: true; body: string } | { ok: false; error: string }
+}
+
+export type ActionExecution =
+  | WriteActionExecution
+  | RunActionExecution
+  | SkillActionExecution
 
 function quoteUnsafeDescription(content: string): string {
   // Small models commonly write a `description` value containing a colon
@@ -211,17 +255,45 @@ function looksLikeAgent(path: string): boolean {
   return path.startsWith('agents/')
 }
 
+export type ExecuteActionOptions = {
+  overwrite?: boolean
+  // Resolver injected by useChat. Returns the skill body when the LLM
+  // asked to load a skill. We don't import the catalog here directly to
+  // keep this module testable without filesystem dependencies.
+  resolveSkill?: (name: string) => string | null
+}
+
 /**
  * Synchronously prepare and (for write) execute a parsed action.
  * For run actions, only validates pre-conditions ; the actual launch is
  * driven by useChat via launchAgent() so output can be streamed.
+ * For skill actions, looks up the skill body via the resolver.
  */
 export function executeAction(
   action: ParsedAction,
-  options: { overwrite?: boolean } = {},
+  options: ExecuteActionOptions = {},
 ): ActionExecution {
   if (action.kind === 'run') {
     return { kind: 'run', agent: action.agent, result: { ok: true } }
+  }
+
+  if (action.kind === 'skill') {
+    if (!options.resolveSkill) {
+      return {
+        kind: 'skill',
+        skill: action.skill,
+        result: { ok: false, error: 'no skill resolver configured' },
+      }
+    }
+    const body = options.resolveSkill(action.skill)
+    if (body === null) {
+      return {
+        kind: 'skill',
+        skill: action.skill,
+        result: { ok: false, error: `skill not found : ${action.skill}` },
+      }
+    }
+    return { kind: 'skill', skill: action.skill, result: { ok: true, body } }
   }
 
   const path = normalizeWritePath(action.path)
