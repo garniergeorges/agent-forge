@@ -13,7 +13,8 @@ import { C } from '../theme/colors.ts'
 import {
   type HighlightedLine,
   type Segment,
-  highlightPlain,
+  highlightAgentRun,
+  highlightMarkdown,
   highlightYamlText,
 } from './syntax.ts'
 
@@ -35,40 +36,64 @@ const STATUS_COLOR: Record<ActionStatus, string> = {
   declined: C.grey,
 }
 
+function sectionHeader(label: string): HighlightedLine {
+  return [{ text: `── ${label} ──`, color: C.grey, dim: true }]
+}
+
 function buildLines(action: Action): HighlightedLine[] {
   if (action.kind === 'write') {
+    // AGENT.md = YAML frontmatter + Markdown body. Splitting them and
+    // highlighting each with its own grammar gives much better
+    // contrast than a single YAML pass over the whole file.
+    const frontmatterMatch = action.content.match(
+      /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/,
+    )
+    if (frontmatterMatch) {
+      const fmRaw = frontmatterMatch[1] ?? ''
+      const bodyRaw = frontmatterMatch[2] ?? ''
+      const out: HighlightedLine[] = []
+      out.push([{ text: '---', color: C.grey, dim: true }])
+      out.push(...highlightYamlText(fmRaw))
+      out.push([{ text: '---', color: C.grey, dim: true }])
+      if (bodyRaw.length > 0) {
+        out.push([{ text: ' ' }])
+        out.push(...highlightMarkdown(bodyRaw))
+      }
+      return out
+    }
     return highlightYamlText(action.content)
   }
   if (action.kind === 'skill') {
     const out: HighlightedLine[] = []
-    out.push([{ text: '── description ──', color: C.grey, dim: true }])
-    out.push(...highlightPlain(action.description))
-    out.push([{ text: '' }])
-    out.push([{ text: '── instructions injected into context ──', color: C.grey, dim: true }])
+    out.push(sectionHeader('description'))
+    out.push(...highlightMarkdown(action.description))
+    out.push([{ text: ' ' }])
+    out.push(sectionHeader('instructions injected into context'))
     if (action.body && action.body.length > 0) {
-      out.push(...highlightPlain(action.body))
+      out.push(...highlightMarkdown(action.body))
     } else {
       out.push([{ text: '(skill body not loaded yet)', color: C.grey, dim: true }])
     }
     if (action.status === 'failed' && action.error) {
-      out.push([{ text: '' }])
+      out.push([{ text: ' ' }])
       out.push([{ text: `✗ ${action.error}`, color: C.red }])
     }
     return out
   }
-  // run : prompt then output
+  // run : prompt (markdown-ish prose) then output (mixed forge:* +
+  // [forge:tool] streams).
   const out: HighlightedLine[] = []
-  out.push([{ text: '── prompt ──', color: C.grey, dim: true }])
-  out.push(...highlightPlain(action.prompt))
-  out.push([{ text: '' }])
-  out.push([{ text: '── output ──', color: C.grey, dim: true }])
+  out.push(sectionHeader('prompt'))
+  out.push(...highlightMarkdown(action.prompt))
+  out.push([{ text: ' ' }])
+  out.push(sectionHeader('output'))
   if (action.output.length > 0) {
-    out.push(...highlightPlain(action.output))
+    out.push(...highlightAgentRun(action.output))
   } else {
     out.push([{ text: '(empty)', color: C.grey, dim: true }])
   }
   if (action.status === 'failed' && action.error) {
-    out.push([{ text: '' }])
+    out.push([{ text: ' ' }])
     out.push([{ text: `✗ ${action.error}`, color: C.red }])
   }
   return out

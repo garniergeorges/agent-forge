@@ -21,6 +21,7 @@ import { C } from '../theme/colors.ts'
 import {
   type HighlightedLine,
   type Segment,
+  highlightAgentRun,
   highlightPlain,
   highlightYamlText,
 } from './syntax.ts'
@@ -172,7 +173,8 @@ function RunCard({
   focused: boolean
 }): React.JSX.Element {
   const promptLines = highlightPlain(action.prompt)
-  const outputLines = action.output.length > 0 ? highlightPlain(action.output) : []
+  const outputLines =
+    action.output.length > 0 ? highlightAgentRun(action.output) : []
   return (
     <CardFrame status={action.status} focused={focused}>
       <Box>
