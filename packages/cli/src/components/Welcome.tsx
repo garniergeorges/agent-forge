@@ -14,7 +14,7 @@
 
 import { Box, Text, useApp, useStdin } from 'ink'
 import TextInput from 'ink-text-input'
-import React, { useState } from 'react'
+import React from 'react'
 import { getCurrentModelName } from '@agent-forge/core/builder'
 import { isCommand, runCommand } from '../commands.ts'
 import { useChatContext } from '../hooks/useChatContext.tsx'
@@ -39,7 +39,6 @@ export function Welcome(): React.JSX.Element {
   const { lang, setLang } = useLanguage()
   const { exit } = useApp()
   const { isRawModeSupported } = useStdin()
-  const [input, setInput] = useState('')
   const {
     state,
     send,
@@ -51,6 +50,8 @@ export function Welcome(): React.JSX.Element {
     pending,
     approvePending,
     declinePending,
+    promptDraft,
+    setPromptDraft,
   } = useChatContext()
 
   const hasMessages = state.messages.length > 0 || state.streaming !== null
@@ -59,7 +60,7 @@ export function Welcome(): React.JSX.Element {
   const handleSubmit = (value: string): void => {
     const trimmed = value.trim()
     if (!trimmed || busy) return
-    setInput('')
+    setPromptDraft('')
 
     if (isCommand(trimmed)) {
       addSystemMessage(trimmed)
@@ -116,8 +117,8 @@ export function Welcome(): React.JSX.Element {
             <Text color={C.orange}>{' ❯ '}</Text>
             {isRawModeSupported ? (
               <TextInput
-                value={input}
-                onChange={setInput}
+                value={promptDraft}
+                onChange={setPromptDraft}
                 onSubmit={handleSubmit}
                 placeholder={busy ? '' : t('welcomeInputPlaceholder')}
               />

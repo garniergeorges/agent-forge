@@ -84,7 +84,8 @@ function StatusBadge({ status }: { status: ActionStatus }): React.JSX.Element {
   )
 }
 
-function borderColorFor(status: ActionStatus): string {
+function borderColorFor(status: ActionStatus, focused: boolean): string {
+  if (focused) return C.orangeBright
   if (status === 'done') return C.green
   if (status === 'failed') return C.red
   if (status === 'declined') return C.grey
@@ -94,16 +95,18 @@ function borderColorFor(status: ActionStatus): string {
 
 function CardFrame({
   status,
+  focused,
   children,
 }: {
   status: ActionStatus
+  focused: boolean
   children: React.ReactNode
 }): React.JSX.Element {
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
-      borderColor={borderColorFor(status)}
+      borderStyle={focused ? 'double' : 'round'}
+      borderColor={borderColorFor(status, focused)}
       paddingX={2}
       paddingY={0}
       marginBottom={1}
@@ -114,11 +117,26 @@ function CardFrame({
   )
 }
 
-function WriteCard({ action }: { action: WriteAction }): React.JSX.Element {
+function FocusMarker({ focused }: { focused: boolean }): React.JSX.Element {
+  return (
+    <Text color={C.orangeBright} bold>
+      {focused ? '▸ ' : '  '}
+    </Text>
+  )
+}
+
+function WriteCard({
+  action,
+  focused,
+}: {
+  action: WriteAction
+  focused: boolean
+}): React.JSX.Element {
   const lines = highlightYamlText(action.content)
   return (
-    <CardFrame status={action.status}>
+    <CardFrame status={action.status} focused={focused}>
       <Box>
+        <FocusMarker focused={focused} />
         <StatusBadge status={action.status} />
         <Text color={C.grey} dimColor>{'  write  '}</Text>
         <Text color={C.white}>{action.path}</Text>
@@ -140,12 +158,19 @@ function WriteCard({ action }: { action: WriteAction }): React.JSX.Element {
   )
 }
 
-function RunCard({ action }: { action: RunAction }): React.JSX.Element {
+function RunCard({
+  action,
+  focused,
+}: {
+  action: RunAction
+  focused: boolean
+}): React.JSX.Element {
   const promptLines = highlightPlain(action.prompt)
   const outputLines = action.output.length > 0 ? highlightPlain(action.output) : []
   return (
-    <CardFrame status={action.status}>
+    <CardFrame status={action.status} focused={focused}>
       <Box>
+        <FocusMarker focused={focused} />
         <StatusBadge status={action.status} />
         <Text color={C.grey} dimColor>{'  run  '}</Text>
         <Text color={C.white}>{action.agent}</Text>
@@ -173,8 +198,10 @@ function RunCard({ action }: { action: RunAction }): React.JSX.Element {
 
 export function MissionControl({
   actions,
+  focusedId,
 }: {
   actions: Action[]
+  focusedId: string | null
 }): React.JSX.Element {
   const cols = process.stdout.columns ?? 80
   return (
@@ -191,14 +218,24 @@ export function MissionControl({
         <Text color={C.grey} dimColor>
           {`  ${actions.length.toString()} action${actions.length === 1 ? '' : 's'}`}
         </Text>
-      </Box>
-      {actions.map((a) =>
-        a.kind === 'write' ? (
-          <WriteCard key={a.id} action={a} />
+        {focusedId === null ? (
+          <Text color={C.grey} dimColor>
+            {'   [Tab] focus a card  ·  [Enter] open detail'}
+          </Text>
         ) : (
-          <RunCard key={a.id} action={a} />
-        ),
-      )}
+          <Text color={C.grey} dimColor>
+            {'   [Enter] open detail  ·  [Tab/Shift+Tab] cycle'}
+          </Text>
+        )}
+      </Box>
+      {actions.map((a) => {
+        const focused = a.id === focusedId
+        return a.kind === 'write' ? (
+          <WriteCard key={a.id} action={a} focused={focused} />
+        ) : (
+          <RunCard key={a.id} action={a} focused={focused} />
+        )
+      })}
     </Box>
   )
 }

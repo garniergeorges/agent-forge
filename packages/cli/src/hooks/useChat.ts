@@ -116,6 +116,8 @@ export function useChat(lang: Lang): {
   pending: Action | null
   approvePending: () => void
   declinePending: () => void
+  promptDraft: string
+  setPromptDraft: (value: string) => void
 } {
   const [state, setState] = useState<ChatState>({
     messages: [],
@@ -125,6 +127,13 @@ export function useChat(lang: Lang): {
   })
   const [busy, setBusy] = useState(false)
   const [scrollOffset, setScrollOffset] = useState(0)
+  // Lifted out of Welcome so App can know when the input is empty (and
+  // thus capture Tab for Mission Control focus without stealing keys
+  // from the prompt).
+  const [promptDraft, setPromptDraftState] = useState('')
+  const setPromptDraft = useCallback((value: string) => {
+    setPromptDraftState(value)
+  }, [])
   // Buffer des messages cachés mais toujours envoyés au LLM dans `send`.
   // `/clear` y déplace les messages visibles (vue vide, contexte préservé) ;
   // `/reset` le purge. Stocké en ref pour ne pas redéclencher de rendu.
@@ -366,5 +375,7 @@ export function useChat(lang: Lang): {
     pending: headPending,
     approvePending,
     declinePending,
+    promptDraft,
+    setPromptDraft,
   }
 }
