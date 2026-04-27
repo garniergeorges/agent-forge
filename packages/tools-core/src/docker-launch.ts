@@ -9,7 +9,7 @@
 // agents can run in parallel without collision.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { FORGE_HOME } from './file-write.ts'
@@ -75,6 +75,16 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
     spawnSync('docker', ['rm', '-f', containerName], { stdio: 'ignore' })
   }
 
+  // Per-run workspace on the host, bind-mounted RW into the container so
+  // tools (forge:bash, forge:write) have a sandbox they can scribble in.
+  // Kept after the container exits — useful for debugging and for P5
+  // artifact extraction.
+  const workspaceHostDir = join(
+    FORGE_HOME,
+    'workspaces',
+    containerName,
+  )
+
   async function* run(): AsyncGenerator<DockerLaunchEvent, void, void> {
     if (!existsSync(agentMdPath)) {
       yield { type: 'error', error: `AGENT.md not found : ${agentMdPath}` }
@@ -90,6 +100,8 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       return
     }
 
+    mkdirSync(workspaceHostDir, { recursive: true })
+
     const args = [
       'run',
       '--rm',
@@ -100,6 +112,10 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       `${agentMdPath}:/agent/AGENT.md:ro`,
       '-v',
       `${RUNTIME_DIST_FROM_TOOLS}:/runtime:ro`,
+      '-v',
+      `${workspaceHostDir}:/workspace`,
+      '-w',
+      '/workspace',
       ...inheritEnv(),
       IMAGE,
       'node',

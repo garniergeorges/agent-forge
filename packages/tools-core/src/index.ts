@@ -21,3 +21,20 @@ export {
   type DockerLaunchInput,
   type LaunchHandle,
 } from './docker-launch.ts'
+
+// Runtime-side tools — used INSIDE the agent's container, sandboxed to
+// /workspace. Distinct from the host-side FileWrite above.
+export {
+  BashInputSchema,
+  WORKSPACE_DIR,
+  executeBash,
+  type BashInput,
+  type BashResult,
+} from './runtime/bash.ts'
+
+export {
+  RuntimeFileWriteInputSchema,
+  executeRuntimeFileWrite,
+  type RuntimeFileWriteInput,
+  type RuntimeFileWriteResult,
+} from './runtime/file-write.ts'
