@@ -12,7 +12,7 @@ Primitives de base d'Agent Forge.
   - **`skill-matcher.ts`** — match côté serveur des triggers (sous-chaîne insensible à la casse)
   - **`skill-runner.ts`** — orchestration de `scaffold-and-run` (deux appels `generateText` ciblés, un pour AGENT.md, un pour le run prompt)
   - **`skills/scaffold-and-run.md`** — première skill built-in
-- **`types/agent-md.ts`** — `parseAgentMd(text)` : sépare frontmatter / body, valide via Zod (name kebab-case, description non vide, sandbox.image, sandbox.timeout, maxTurns)
+- **`types/agent-md.ts`** — `parseAgentMd(text)` : sépare frontmatter / body, valide via Zod (name kebab-case, description non vide, sandbox.image, sandbox.timeout, maxTurns). P5 : champs `sandbox.network` (`none` / `bridge`), `sandbox.readOnlyRoot`, `sandbox.user`, `sandbox.resources.{memory, cpus, pidsLimit}`. Helper `applySandboxDefaults()` qui applique les valeurs strictes (`network: none`, `readOnlyRoot: true`, `user: agent`, `512m / 1 cpu / 128 pids`) à tout champ omis.
 - **`types/skill-md.ts`** — `parseSkillMd(text)` : même pattern pour les skills (name, description, triggers, actions)
 
 ## À venir

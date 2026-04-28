@@ -5,14 +5,49 @@
 // async generator. The container is named so we can force-remove it on
 // crash, signal, or timeout.
 //
-// Multi-instance ready : each call uses a unique container name so several
-// agents can run in parallel without collision.
+// P5 hardening : sandbox flags (--read-only, --cap-drop=ALL,
+// --security-opt=no-new-privileges, --network=none, --memory, --cpus,
+// --pids-limit, --user) are derived from the agent's AGENT.md sandbox
+// section through applySandboxDefaults. Defaults are strict — agents
+// must opt in to relax (network: bridge, readOnlyRoot: false, …) and
+// the permission dialog flags any non-default choice.
+//
+// LLM proxy : because --network=none cuts the container off from the
+// internet, an LLM proxy server is started on the HOST before docker
+// run, listening on a Unix socket bind-mounted into the container at
+// /run/forge/llm.sock. The runtime points its OpenAI client at that
+// socket. The proxy forwards only /v1/chat/completions to the real
+// FORGE_BASE_URL with FORGE_API_KEY injected. Container env carries
+// neither the real URL nor the key.
+//
+// Multi-instance ready : each call uses a unique container name + a
+// unique socket path, so several agents can run in parallel without
+// collision.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { z } from 'zod'
+import { getLogger } from '@agent-forge/core/log'
+import {
+  type AppliedSandboxConfig,
+  applySandboxDefaults,
+  parseAgentMd,
+} from '@agent-forge/core/types'
 import { FORGE_HOME } from './file-write.ts'
+import { type LlmProxyHandle, startLlmProxy } from './llm-proxy.ts'
+import {
+  type SandboxNetworkProfile,
+  detectSandboxNetworkProfile,
+} from './sandbox-network.ts'
+
+const log = getLogger('dockerLaunch')
+
+// Where the proxy socket appears INSIDE the container. The runtime's
+// OpenAI client reads FORGE_BASE_URL and connects to this socket via
+// a custom http agent.
+const CONTAINER_SOCKET_PATH = '/run/forge/llm.sock'
+const CONTAINER_BASE_URL = `unix://${CONTAINER_SOCKET_PATH}/v1`
 
 export const DockerLaunchInputSchema = z.object({
   agent: z
@@ -30,7 +65,6 @@ export type DockerLaunchEvent =
   | { type: 'done'; exitCode: number }
   | { type: 'error'; error: string }
 
-const IMAGE = process.env.FORGE_AGENT_IMAGE ?? 'agent-forge/base:latest'
 const TIMEOUT_MS = Number(process.env.FORGE_RUN_TIMEOUT_MS ?? '120000')
 
 // Resolved at runtime (host filesystem) — same path the CLI uses to mount
@@ -45,14 +79,95 @@ function uniqueContainerName(agent: string): string {
   return `agent-forge-run-${agent}-${id}`
 }
 
-function inheritEnv(): string[] {
-  // Forward LLM credentials and overrides into the container so the runtime
-  // can call the same provider as the builder.
-  const passthrough = ['FORGE_BASE_URL', 'FORGE_API_KEY', 'FORGE_MODEL']
+function containerEnv(profile: SandboxNetworkProfile): string[] {
   const out: string[] = []
-  for (const k of passthrough) {
-    const v = process.env[k]
-    if (v) out.push('-e', `${k}=${v}`)
+  const model = process.env.FORGE_MODEL
+  if (model) out.push('-e', `FORGE_MODEL=${model}`)
+
+  if (profile === 'proxy') {
+    // The container does NOT receive the real LLM endpoint nor the
+    // API key. Instead it gets the in-container Unix socket URL ;
+    // the host proxy injects credentials and forwards.
+    out.push('-e', `FORGE_BASE_URL=${CONTAINER_BASE_URL}`)
+    // The OpenAI SDK requires a non-empty API key. Sentinel that's
+    // obviously not a credential.
+    out.push('-e', 'FORGE_API_KEY=via-proxy')
+  } else {
+    // Bridge fallback : container talks to the upstream directly.
+    // We HAVE to forward the real key here — there's no proxy in
+    // the path. The redaction layer in the logger keeps it out of
+    // every log line.
+    const upstreamBase = process.env.FORGE_BASE_URL
+    const upstreamKey = process.env.FORGE_API_KEY
+    if (upstreamBase) out.push('-e', `FORGE_BASE_URL=${upstreamBase}`)
+    if (upstreamKey) out.push('-e', `FORGE_API_KEY=${upstreamKey}`)
+  }
+  return out
+}
+
+// Names of env vars whose values must be redacted before any log line.
+// API keys leak in `docker spawn args` (we pass them via -e KEY=value)
+// otherwise. The redaction only affects logs — the container still
+// receives the real value.
+const SECRET_ENV_KEYS = new Set([
+  'FORGE_API_KEY',
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'MISTRAL_API_KEY',
+])
+
+function redactSecretsInArgs(args: string[]): string[] {
+  return args.map((a) => {
+    // Only `-e KEY=value` pairs land as a single arg here. Match
+    // against our explicit allowlist so we never accidentally redact
+    // something benign.
+    const eq = a.indexOf('=')
+    if (eq < 0) return a
+    const key = a.slice(0, eq)
+    if (SECRET_ENV_KEYS.has(key)) return `${key}=***redacted***`
+    return a
+  })
+}
+
+// Build the docker run flags that enforce the hardening profile
+// declared in AGENT.md. These come BEFORE the image name in the
+// args array, after the standard --name / -i / -v block.
+//
+// `networkProfile` overrides AGENT.md's `network` field when the host
+// can't ship a Unix socket through a bind-mount (Docker Desktop on
+// macOS — the FUSE layer doesn't pass UDS through). On those hosts
+// we fall back to network=bridge so the runtime can talk to the
+// upstream directly. Other hardening (cap-drop, no-new-privileges,
+// non-root user, read-only root, resource caps) stays on.
+//
+// Exported (alongside resolveSandboxFromAgentMd) so tests can verify
+// the translation without spawning an actual container.
+export function hardeningFlags(
+  cfg: AppliedSandboxConfig,
+  networkProfile: SandboxNetworkProfile = 'proxy',
+): string[] {
+  // Resolve the actual --network flag : when AGENT.md asks for none
+  // but we need a fallback bridge to reach the LLM, the profile wins.
+  const effectiveNetwork =
+    cfg.network === 'none' && networkProfile === 'bridge'
+      ? 'bridge'
+      : cfg.network
+  const out: string[] = [
+    '--cap-drop=ALL',
+    '--security-opt=no-new-privileges',
+    `--network=${effectiveNetwork}`,
+    `--user=${cfg.user}`,
+    `--memory=${cfg.memory}`,
+    `--cpus=${cfg.cpus.toString()}`,
+    `--pids-limit=${cfg.pidsLimit.toString()}`,
+  ]
+  if (cfg.readOnlyRoot) {
+    // Read-only root FS, with a tmpfs over /tmp so package
+    // installers, test runners and shell utilities that scribble
+    // there keep working without granting write to the image.
+    // /workspace is bind-mounted RW just below, so it's not
+    // affected by --read-only.
+    out.push('--read-only', '--tmpfs=/tmp:rw,size=64m,mode=1777')
   }
   return out
 }
@@ -61,6 +176,26 @@ export type LaunchHandle = {
   containerName: string
   events: AsyncGenerator<DockerLaunchEvent, void, void>
   abort: () => void
+}
+
+/**
+ * Resolve the AGENT.md frontmatter to its applied sandbox config —
+ * same routine used internally before launching, exposed here so the
+ * permission dialog can show the user what hardening profile this
+ * agent will run with (and warn on relaxations like network=bridge).
+ *
+ * Returns null if the AGENT.md cannot be parsed ; the caller should
+ * surface a parse error in the UI instead.
+ */
+export function resolveSandboxFromAgentMd(
+  agentMdContent: string,
+): AppliedSandboxConfig | null {
+  try {
+    const parsed = parseAgentMd(agentMdContent)
+    return applySandboxDefaults(parsed.meta.sandbox)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -100,7 +235,60 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       return
     }
 
+    // Read the AGENT.md to know which image and which hardening
+    // profile to apply. Parsing here means malformed AGENT.md
+    // surfaces as a clean error before docker is even invoked.
+    let sandboxCfg: AppliedSandboxConfig
+    try {
+      const raw = readFileSync(agentMdPath, 'utf8')
+      const parsed = parseAgentMd(raw)
+      sandboxCfg = applySandboxDefaults(parsed.meta.sandbox)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error('agent.md parse failed', { agent: input.agent, error: msg })
+      yield { type: 'error', error: `cannot read AGENT.md : ${msg}` }
+      return
+    }
+
     mkdirSync(workspaceHostDir, { recursive: true })
+
+    // Pick the network profile : 'proxy' (network=none + UDS proxy)
+    // when supported, 'bridge' when the host can't ship a Unix
+    // socket through a bind-mount (Docker Desktop on macOS).
+    const networkProfile: SandboxNetworkProfile =
+      await detectSandboxNetworkProfile()
+
+    // Proxy profile : start the per-run LLM proxy on a Unix socket
+    // bind-mounted into the container. Bridge profile : skip the
+    // proxy, the runtime talks to the upstream directly.
+    const socketHostDir = join(FORGE_HOME, 'run', containerName)
+    const socketHostPath = join(socketHostDir, 'llm.sock')
+    let proxy: LlmProxyHandle | null = null
+    if (networkProfile === 'proxy') {
+      const upstreamBase = process.env.FORGE_BASE_URL ?? 'https://api.mistral.ai/v1'
+      const upstreamKey = process.env.FORGE_API_KEY ?? ''
+      try {
+        proxy = await startLlmProxy({
+          socketPath: socketHostPath,
+          upstreamBaseUrl: upstreamBase,
+          apiKey: upstreamKey,
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        log.error('proxy start failed', { error: msg })
+        yield { type: 'error', error: `cannot start LLM proxy : ${msg}` }
+        return
+      }
+    }
+
+    log.info('launching', {
+      agent: input.agent,
+      containerName,
+      workspaceHostDir,
+      networkProfile,
+      socketHostPath: networkProfile === 'proxy' ? socketHostPath : null,
+      sandboxCfg,
+    })
 
     const args = [
       'run',
@@ -108,20 +296,33 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       '-i',
       '--name',
       containerName,
+      // Volumes BEFORE hardening flags so --read-only doesn't reject
+      // them.
       '-v',
       `${agentMdPath}:/agent/AGENT.md:ro`,
       '-v',
       `${RUNTIME_DIST_FROM_TOOLS}:/runtime:ro`,
       '-v',
       `${workspaceHostDir}:/workspace`,
+      // The LLM proxy socket : only mounted in proxy profile. We
+      // mount the directory (not the file) so the socket inode
+      // resolves correctly inside the container.
+      ...(networkProfile === 'proxy'
+        ? ['-v', `${socketHostDir}:${dirname(CONTAINER_SOCKET_PATH)}`]
+        : []),
       '-w',
       '/workspace',
-      ...inheritEnv(),
-      IMAGE,
+      ...hardeningFlags(sandboxCfg, networkProfile),
+      ...containerEnv(networkProfile),
+      sandboxCfg.image,
       'node',
       '/runtime/runtime.mjs',
     ]
 
+    log.debug('docker spawn args', {
+      containerName,
+      args: redactSecretsInArgs(args),
+    })
     const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] })
 
     const timeout = setTimeout(() => {
@@ -170,24 +371,41 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
     child.stdin.write(input.prompt)
     child.stdin.end()
 
+    let streamedTotal = 0
+    let streamedAcc = ''
     try {
       while (true) {
         const evt = await next()
         if (evt.kind === 'end') break
+        streamedTotal += evt.text.length
+        streamedAcc += evt.text
         yield { type: 'chunk', text: evt.text }
       }
       const exitCode = await exitPromise
       const stderr = stderrChunks.join('').trim()
-      if (stderr.length > 0) yield { type: 'stderr', text: stderr }
+      if (stderr.length > 0) {
+        log.warn('docker stderr', { containerName, stderr })
+        yield { type: 'stderr', text: stderr }
+      }
+      log.info('done', { containerName, exitCode, streamedBytes: streamedTotal })
+      log.trace('full agent output', { containerName, output: streamedAcc })
       yield { type: 'done', exitCode }
     } catch (err) {
-      yield {
-        type: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      }
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error('runtime error', { containerName, error: msg })
+      yield { type: 'error', error: msg }
     } finally {
       clearTimeout(timeout)
       forceRemove()
+      if (proxy) {
+        try {
+          proxy.stop()
+        } catch (err) {
+          log.warn('proxy stop failed', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
     }
   }
 

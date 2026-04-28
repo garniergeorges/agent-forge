@@ -37,7 +37,9 @@ The builder is the only conversational surface. Sub-agents are spawned on demand
 | **P3** | Builder writes `AGENT.md`, asks for permission, launches the agent in a fresh container, streams its output | ✅ done |
 | **P4** | Six native tools sandboxed under `/workspace` : Bash, FileWrite, FileRead, FileEdit, Grep, Glob ; runtime tool-loop with `maxTurns` | ✅ done |
 | **P6** | Skill layer : `SKILL.md` format, catalog (built-in + `~/.agent-forge/skills/`), server-side trigger matching, two-call runner (one for AGENT.md, one for the run prompt) | ✅ done |
-| P5 | Hardened sandbox + persistent agents (`docker exec`) + artifact extraction back to host | next |
+| **P5.1** | Hardened Docker sandbox : non-root user, read-only root + tmpfs `/tmp`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--network=none` by default, resource caps (memory / cpus / pids). Permission dialog flags any AGENT.md relaxation. | ✅ done |
+| P5.2 | Artifact extraction back to host (`~/.agent-forge/artifacts/<session>/<agent>/`) | next |
+| P5.3 | Persistent agents via `docker exec`, lifecycle slash commands | |
 | P7 | `TEAM.md` — coordinated multi-agent runs | |
 | P8 | Pixel-art dashboard (live agent activity) | |
 | P9 | ★ POC validated : Next.js + Laravel + QA demo end-to-end | |
@@ -200,6 +202,41 @@ Built-in `scaffold-and-run` ships today : it triggers on words like `audite`, `t
 - `Esc` — drop the focus (or close the detail view)
 - `↑↓ / PgUp / PgDn / g / G` — scroll inside the detail view
 - `Ctrl+E` — return the chat transcript to live mode
+
+## Sandbox networking
+
+Two profiles, picked automatically at first run :
+
+- **proxy** — `--network=none` inside the container ; the host runs a per-run LLM proxy on a Unix socket bind-mounted at `/run/forge/llm.sock`. The container never sees the API key. **This is the strict, secure profile we want.**
+- **bridge** — `--network=bridge` ; the runtime talks to the upstream directly. The API key has to be forwarded into the container env. Less ideal, but it's the only thing that works under Docker Desktop on macOS (the FUSE bind-mount layer doesn't support Unix sockets).
+
+The detector probes once at startup with a tiny throwaway container. Runs on Linux pick `proxy` ; runs on Docker Desktop Mac pick `bridge`. Override with `FORGE_SANDBOX_NETWORK=proxy|bridge`.
+
+The other hardening flags stay on regardless of profile : `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, `--user=agent`, memory / cpus / pids caps.
+
+## Debugging
+
+The TUI owns stdout, so we never `console.log` — instead Forge ships a structured file logger.
+
+```bash
+# Off by default. Either flag turns it on :
+FORGE_DEBUG=1 bun run forge                       # debug level → ~/.agent-forge/logs/forge-<pid>-<ts>.log
+FORGE_DEBUG=trace bun run forge                   # finer (system prompts, full LLM replies)
+FORGE_LOG_FILE=/tmp/forge.log bun run forge       # explicit path
+
+# Inside the REPL :
+/log                                              # prints the current log path
+```
+
+The log is JSON-lines, one entry per line :
+
+```json
+{"t":"2026-04-27T22:30:00.000Z","level":"info","source":"useChat","msg":"send","data":{"prompt":"…"}}
+{"t":"2026-04-27T22:30:01.523Z","level":"info","source":"skillRunner","msg":"runScaffoldAndRun start"}
+{"t":"2026-04-27T22:30:04.812Z","level":"info","source":"dockerLaunch","msg":"launching","data":{"agent":"…","sandboxCfg":{…}}}
+```
+
+Useful greps : `jq -r 'select(.level=="error")' forge-*.log`, or `grep '"source":"dockerLaunch"' forge-*.log | jq`.
 
 ## Architecture
 

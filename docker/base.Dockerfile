@@ -1,7 +1,18 @@
 # Agent Forge — base image
 # Minimal sandbox for simple agents (read, edit, run shell).
 #
-# Status : POC, not built yet. This file is a sketch of the target.
+# Hardening (P5) :
+#   - non-root user `agent` (uid 1000) is the default at runtime
+#   - /workspace is the only writable dir owned by `agent`
+#   - DockerLaunch passes --read-only on the root FS, plus a tmpfs
+#     mount on /tmp so package installers and test runners that
+#     write under /tmp keep working without granting write to the
+#     image
+#   - --cap-drop=ALL --security-opt=no-new-privileges
+#   - --network=none always — even agents that need an LLM call go
+#     through the host's per-run LLM proxy, bind-mounted as a Unix
+#     socket at /run/forge/llm.sock. The host injects the API key
+#     and forwards only /v1/chat/completions to the real upstream.
 
 FROM debian:bookworm-slim
 
@@ -24,8 +35,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
 
 # ─── Non-root user ───────────────────────────────────────────────
 RUN useradd -m -s /bin/bash agent \
-    && mkdir -p /workspace \
-    && chown agent:agent /workspace
+    && mkdir -p /workspace /run/forge \
+    && chown agent:agent /workspace /run/forge
 USER agent
 WORKDIR /workspace
 

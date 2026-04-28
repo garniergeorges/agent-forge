@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./builder": "./src/builder/index.ts",
     "./docker": "./src/docker/index.ts",
+    "./log": "./src/log/index.ts",
     "./tools": "./src/tools/index.ts",
     "./types": "./src/types/index.ts"
   },

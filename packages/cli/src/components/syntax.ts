@@ -275,26 +275,107 @@ export function highlightMarkdown(text: string): HighlightedLine[] {
 // We treat the markers like another fence type : everything between
 // [forge:tool] and [/forge:tool] is rendered with a dim, distinct
 // colour so the user can tell tool output from the agent's narration.
+//
+// forge:* fence bodies are JSON the agent built. Reading raw JSON
+// where every newline shows up as the literal two-character "\n"
+// sequence is unreadable for files of any real length. Below we
+// buffer the body, then on close try to JSON.parse it ; on success
+// we pretty-print it line by line with embedded "\n" turned into
+// real line breaks. On failure we fall back to colouring the raw
+// JSON as before (it's still readable, just less pretty).
 
 const TOOL_OPEN_RE = /^\[forge:tool\]\s*$/
 const TOOL_CLOSE_RE = /^\[\/forge:tool\]\s*$/
+
+// Pretty-print one JSON object the agent emitted inside a forge:*
+// fence. The keys we care about — `content`, `oldString`, `newString`,
+// `command`, `stderr`, `stdout` — all carry strings that the LLM
+// builds with embedded "\n". For each such key we render the value
+// across multiple lines. Other keys go on one line.
+function expandFenceJsonLines(value: unknown): HighlightedLine[] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    // Fallback : single-line JSON dump.
+    return [highlightJsonLine(JSON.stringify(value))]
+  }
+  const obj = value as Record<string, unknown>
+  const out: HighlightedLine[] = []
+  out.push([{ text: '{', color: C.grey }])
+  const entries = Object.entries(obj)
+  for (let i = 0; i < entries.length; i += 1) {
+    const [key, val] = entries[i] as [string, unknown]
+    const trailing = i < entries.length - 1 ? ',' : ''
+    if (typeof val === 'string' && val.includes('\n')) {
+      // Multi-line string : open on its own line, body indented,
+      // close + comma on its own line.
+      out.push([
+        { text: '  ' },
+        { text: `"${key}"`, color: C.orange, bold: true },
+        { text: ': ', color: C.grey },
+        { text: '"', color: C.greyLight },
+      ])
+      const lines = val.split('\n')
+      for (const line of lines) {
+        out.push([
+          { text: '    ' },
+          { text: line.length > 0 ? line : ' ', color: C.greyLight },
+        ])
+      }
+      out.push([
+        { text: '  ' },
+        { text: `"${trailing}`, color: C.greyLight },
+      ])
+    } else {
+      // Single-line entry, JSON-coloured.
+      const rendered = `  ${JSON.stringify(key)}: ${JSON.stringify(val)}${trailing}`
+      out.push(highlightJsonLine(rendered))
+    }
+  }
+  out.push([{ text: '}', color: C.grey }])
+  return out
+}
 
 export function highlightAgentRun(text: string): HighlightedLine[] {
   const out: HighlightedLine[] = []
   const lines = text.split('\n')
   let inFence = false
+  let fenceTag = ''
   let fenceLine: ((line: string) => HighlightedLine) | null = null
+  let fenceBuffer: string[] = []
   let inTool = false
+
+  const flushFenceBuffer = (closeLine: string): void => {
+    const joined = fenceBuffer.join('\n').trim()
+    let rendered: HighlightedLine[] | null = null
+    // Only the forge:* fences carry JSON we want to expand. Other
+    // fenced languages (yaml, plain) keep their per-line rendering.
+    if (fenceTag.startsWith('forge:') && joined.length > 0) {
+      try {
+        const parsed: unknown = JSON.parse(joined)
+        rendered = expandFenceJsonLines(parsed)
+      } catch {
+        rendered = null
+      }
+    }
+    if (rendered) {
+      out.push(...rendered)
+    } else {
+      const lineFn = fenceLine ?? highlightYamlLine
+      for (const b of fenceBuffer) out.push(lineFn(b))
+    }
+    out.push([{ text: closeLine, color: C.grey, dim: true }])
+    inFence = false
+    fenceTag = ''
+    fenceLine = null
+    fenceBuffer = []
+  }
 
   for (const raw of lines) {
     if (inFence) {
       if (FENCE_CLOSE_RE.test(raw)) {
-        out.push([{ text: raw, color: C.grey, dim: true }])
-        inFence = false
-        fenceLine = null
+        flushFenceBuffer(raw)
         continue
       }
-      out.push((fenceLine ?? highlightYamlLine)(raw))
+      fenceBuffer.push(raw)
       continue
     }
     if (inTool) {
@@ -317,7 +398,9 @@ export function highlightAgentRun(text: string): HighlightedLine[] {
     const fenceOpen = raw.match(FENCE_OPEN_RE)
     if (fenceOpen) {
       inFence = true
-      fenceLine = languageHighlighter(fenceOpen[1] ?? '')
+      fenceTag = fenceOpen[1] ?? ''
+      fenceLine = languageHighlighter(fenceTag)
+      fenceBuffer = []
       out.push([{ text: raw, color: C.orange, bold: true }])
       continue
     }
@@ -327,5 +410,7 @@ export function highlightAgentRun(text: string): HighlightedLine[] {
     }
     out.push(highlightInlineMarkdown(raw))
   }
+  // EOF inside an unclosed fence : flush what we have.
+  if (inFence) flushFenceBuffer('')
   return out
 }

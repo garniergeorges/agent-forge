@@ -17,6 +17,7 @@
 // inside [forge:tool] markers so the host can show them in Mission
 // Control without re-running the parser.
 
+import { request as httpRequest } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { createOpenAI } from '@ai-sdk/openai'
 import { parseAgentMd } from '@agent-forge/core/types'
@@ -30,7 +31,7 @@ import {
 } from '@agent-forge/tools-core'
 import { type CoreMessage, streamText } from 'ai'
 import {
-  parseFirstToolBlock,
+  parseAllToolBlocks,
   renderBashResult,
   renderEditResult,
   renderGlobResult,
@@ -80,6 +81,111 @@ function loadAgentConfig(): AgentConfig {
     }
   }
   return config
+}
+
+// When FORGE_BASE_URL points at a Unix socket (unix:///path/to/sock/v1),
+// we can't hand it directly to the OpenAI SDK : its fetch implementation
+// only knows about TCP. Two helpers solve it :
+//   - normaliseBaseUrl returns a synthetic http://localhost URL with
+//     the same path, used purely as a key by the SDK
+//   - makeFetchFor returns a custom fetch that pipes every request
+//     through http.request with a top-level socketPath option (the
+//     standard Node.js way to do HTTP-over-UDS — no http.Agent)
+//
+// The host's LLM proxy listens on that socket, injects the real
+// API key, and forwards to the upstream. The container therefore
+// runs with --network=none and never sees a credential.
+
+function isUnixBaseUrl(baseUrl: string): boolean {
+  return baseUrl.startsWith('unix://')
+}
+
+function unixSocketPath(baseUrl: string): string {
+  // unix:///run/forge/llm.sock/v1 → /run/forge/llm.sock
+  // We split on the next path segment after the socket file. The
+  // proxy's allowlist works at /v1/chat/completions, so by
+  // convention we use a path suffix of /v1.
+  const stripped = baseUrl.slice('unix://'.length)
+  const v1Idx = stripped.lastIndexOf('/v1')
+  return v1Idx > 0 ? stripped.slice(0, v1Idx) : stripped
+}
+
+function urlPathSuffix(baseUrl: string): string {
+  const stripped = baseUrl.slice('unix://'.length)
+  const v1Idx = stripped.lastIndexOf('/v1')
+  return v1Idx > 0 ? stripped.slice(v1Idx) : '/v1'
+}
+
+function normaliseBaseUrl(baseUrl: string): string {
+  if (!isUnixBaseUrl(baseUrl)) return baseUrl
+  // The SDK requires a real-looking URL to compute the request path.
+  // The host part is bogus — our custom fetch ignores it and uses
+  // the Unix socket instead.
+  return `http://localhost${urlPathSuffix(baseUrl)}`
+}
+
+function makeFetchFor(baseUrl: string): typeof fetch | undefined {
+  if (!isUnixBaseUrl(baseUrl)) return undefined
+  const socketPath = unixSocketPath(baseUrl)
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const parsed = new URL(url)
+    const method = init?.method ?? 'GET'
+    const headers: Record<string, string> = {}
+    if (init?.headers) {
+      const h = new Headers(init.headers)
+      h.forEach((v, k) => {
+        headers[k] = v
+      })
+    }
+    return await new Promise<Response>((resolve, reject) => {
+      // socketPath is a top-level option on http.request — passing
+      // it via Agent throws ENOTSUP because the default Agent does
+      // TCP connect. Direct option = direct Unix connect.
+      const req = httpRequest(
+        {
+          method,
+          socketPath,
+          path: parsed.pathname + parsed.search,
+          headers,
+        },
+        (res) => {
+          const respHeaders = new Headers()
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (typeof v === 'string') respHeaders.set(k, v)
+            else if (Array.isArray(v)) respHeaders.set(k, v.join(', '))
+          }
+          // Wrap the IncomingMessage in a ReadableStream so the
+          // Vercel AI SDK gets the SSE chunks as they arrive,
+          // instead of after the upstream closes the connection.
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              res.on('data', (b: Buffer) => controller.enqueue(new Uint8Array(b)))
+              res.on('end', () => controller.close())
+              res.on('error', (err) => controller.error(err))
+            },
+            cancel() {
+              res.destroy()
+            },
+          })
+          resolve(
+            new Response(body, {
+              status: res.statusCode ?? 502,
+              headers: respHeaders,
+            }),
+          )
+        },
+      )
+      req.on('error', reject)
+      if (init?.body) {
+        if (typeof init.body === 'string') req.end(init.body)
+        else if (init.body instanceof Uint8Array) req.end(Buffer.from(init.body))
+        else req.end(String(init.body))
+      } else {
+        req.end()
+      }
+    })
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -168,15 +274,25 @@ async function streamOneTurn(
     maxTokens: MAX_TOKENS,
   })
   let acc = ''
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk)
-    acc += chunk
+  // textStream silently completes on upstream errors in Vercel AI SDK
+  // v4 ; we walk fullStream instead so 'error' parts surface as a
+  // real throw the host can see in stderr (and the dockerLaunch
+  // logger will pick up).
+  for await (const part of result.fullStream) {
+    if (part.type === 'text-delta') {
+      process.stdout.write(part.textDelta)
+      acc += part.textDelta
+    } else if (part.type === 'error') {
+      const err = part.error
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`LLM upstream error : ${msg}`)
+    }
   }
   return acc
 }
 
 async function executeToolBlock(
-  parsed: Extract<ReturnType<typeof parseFirstToolBlock>, { kind: 'tool' }>,
+  parsed: Extract<ReturnType<typeof parseAllToolBlocks>[number], { kind: 'tool' }>,
 ): Promise<string> {
   const tool = parsed.tool
   switch (tool.kind) {
@@ -215,7 +331,11 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  const provider = createOpenAI({ baseURL: BASE_URL, apiKey: API_KEY })
+  const provider = createOpenAI({
+    baseURL: normaliseBaseUrl(BASE_URL),
+    apiKey: API_KEY,
+    fetch: makeFetchFor(BASE_URL),
+  })
   const hasTools = config.maxTurns > 1
   const system = buildSystem(config, hasTools)
 
@@ -227,25 +347,31 @@ async function main(): Promise<void> {
 
     if (!hasTools) break
 
-    const parsed = parseFirstToolBlock(reply)
-    if (parsed.kind === 'none') break
+    const parsed = parseAllToolBlocks(reply)
+    if (parsed.length === 0) break
 
-    // Record what the LLM just said (text + raw block) so the next turn
-    // sees it as a real assistant message.
+    // Record what the LLM just said (text + every raw block) so the
+    // next turn sees it as a real assistant message.
     messages.push({ role: 'assistant', content: reply })
 
-    let toolReply: string
-    if (parsed.kind === 'invalid') {
-      toolReply = renderInvalid(parsed.error)
-    } else {
-      toolReply = await executeToolBlock(parsed)
+    // Execute each block in source order. Each result is appended
+    // back as its own user message so the LLM gets the full
+    // sequence of (call, result, call, result, …) instead of a
+    // fused blob — that ordering matters for the model to
+    // attribute each result to its corresponding call.
+    for (const block of parsed) {
+      let toolReply: string
+      if (block.kind === 'invalid') {
+        toolReply = renderInvalid(block.error)
+      } else {
+        toolReply = await executeToolBlock(block)
+      }
+      // Mark tool output for the host TUI so it can render it
+      // inside the Mission Control card instead of mixing it
+      // with prose.
+      process.stdout.write(`\n[forge:tool]\n${toolReply}\n[/forge:tool]\n`)
+      messages.push({ role: 'user', content: toolReply })
     }
-
-    // Mark tool output for the host TUI so it can render it inside the
-    // Mission Control card instead of mixing it with prose.
-    process.stdout.write(`\n[forge:tool]\n${toolReply}\n[/forge:tool]\n`)
-
-    messages.push({ role: 'user', content: toolReply })
   }
 }
 

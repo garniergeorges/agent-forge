@@ -1,7 +1,7 @@
 // Tests for the agent-side tool block parser. Pure : no FS, no spawn.
 
 import { describe, expect, test } from 'bun:test'
-import { parseFirstToolBlock } from '../src/tool-protocol.ts'
+import { parseAllToolBlocks, parseFirstToolBlock } from '../src/tool-protocol.ts'
 
 describe('parseFirstToolBlock', () => {
   test('returns kind=none on plain text', () => {
@@ -121,5 +121,63 @@ describe('parseFirstToolBlock', () => {
       '```forge:edit\n{ "path": "a.ts", "oldString": "x", "newString": "x" }\n```',
     )
     expect(r.kind).toBe('invalid')
+  })
+})
+
+describe('parseAllToolBlocks', () => {
+  test('returns [] on plain text', () => {
+    expect(parseAllToolBlocks('hello world')).toEqual([])
+  })
+
+  test('parses every block in source order', () => {
+    const stream = [
+      'Step 1.',
+      '```forge:write',
+      '{ "path": "a.ts", "content": "1" }',
+      '```',
+      'Step 2.',
+      '```forge:bash',
+      '{ "command": "ls" }',
+      '```',
+      'Step 3.',
+      '```forge:read',
+      '{ "path": "a.ts" }',
+      '```',
+    ].join('\n')
+    const r = parseAllToolBlocks(stream)
+    expect(r.length).toBe(3)
+    expect(r[0]?.kind).toBe('tool')
+    expect(r[1]?.kind).toBe('tool')
+    expect(r[2]?.kind).toBe('tool')
+    if (r[0]?.kind === 'tool') expect(r[0].tool.kind).toBe('write')
+    if (r[1]?.kind === 'tool') expect(r[1].tool.kind).toBe('bash')
+    if (r[2]?.kind === 'tool') expect(r[2].tool.kind).toBe('read')
+  })
+
+  test('keeps invalid blocks visible instead of dropping them', () => {
+    const stream = [
+      '```forge:write',
+      '{ "path": "ok.ts", "content": "1" }',
+      '```',
+      '```forge:bash',
+      '{ not json }',
+      '```',
+      '```forge:bash',
+      '{ "command": "echo done" }',
+      '```',
+    ].join('\n')
+    const r = parseAllToolBlocks(stream)
+    expect(r.length).toBe(3)
+    expect(r[0]?.kind).toBe('tool')
+    expect(r[1]?.kind).toBe('invalid')
+    expect(r[2]?.kind).toBe('tool')
+  })
+
+  test('text before each block follows source order', () => {
+    const stream = ['intro', '```forge:bash', '{ "command": "a" }', '```', 'middle', '```forge:bash', '{ "command": "b" }', '```'].join('\n')
+    const r = parseAllToolBlocks(stream)
+    expect(r.length).toBe(2)
+    expect(r[0]?.text.trim()).toBe('intro')
+    expect(r[1]?.text.trim()).toBe('middle')
   })
 })

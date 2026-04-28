@@ -8,12 +8,15 @@
 // packages/cli/src/builder-actions.ts.
 
 import { streamText, type CoreMessage } from 'ai'
+import { getLogger } from '../log/index.ts'
 import { getBuilderModel } from './provider.ts'
 import {
   type BuilderLang,
   type SkillCatalogEntry,
   getBuilderSystemPrompt,
 } from './system-prompt.ts'
+
+const log = getLogger('streamBuilder')
 
 export type ChatRole = 'user' | 'assistant' | 'system'
 
@@ -36,16 +39,29 @@ export async function* streamBuilder({
   lang,
   skills,
 }: StreamBuilderArgs): AsyncGenerator<string, void, void> {
+  const system = getBuilderSystemPrompt(lang, { skills })
+  log.info('streamBuilder start', {
+    lang,
+    skillCount: skills?.length ?? 0,
+    messageCount: messages.length,
+    lastMessage: messages[messages.length - 1],
+  })
+  log.trace('streamBuilder system prompt', { system })
+
   const result = streamText({
     model: getBuilderModel(),
-    system: getBuilderSystemPrompt(lang, { skills }),
+    system,
     messages: messages as CoreMessage[],
     // 512 leaves room for a full forge:write block (~300 tokens) plus a
     // short intro sentence. Override via FORGE_MAX_TOKENS if needed.
     maxTokens: Number(process.env.FORGE_MAX_TOKENS ?? '512'),
   })
 
+  let acc = ''
   for await (const chunk of result.textStream) {
+    acc += chunk
     yield chunk
   }
+  log.info('streamBuilder done', { length: acc.length })
+  log.debug('streamBuilder full reply', { reply: acc })
 }
