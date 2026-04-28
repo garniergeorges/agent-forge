@@ -33,10 +33,13 @@
 //   { "pattern": "src/**/*.ts" }
 //   ```
 //
-// Only ONE block is parsed per turn (the first encountered). Everything
-// before the block is treated as the agent's "thinking out loud" text
-// and streamed to the host. Everything after the block is dropped — the
-// agent will see the tool result on the next turn and continue from there.
+// All blocks emitted in a single LLM reply are parsed and executed in
+// order via parseAllToolBlocks. Small models (Mistral Small) routinely
+// emit several blocks in one turn ; processing only the first one
+// (the historical behaviour, kept as parseFirstToolBlock for tests
+// and edge cases) led to lost work and the agent visibly panicking
+// in the next turn ("I wrote utils.ts but forgot the edits, let me
+// run npm test instead").
 
 import { z } from 'zod'
 import {
@@ -86,15 +89,16 @@ const SCHEMAS: Record<ToolKind, z.ZodTypeAny> = {
 }
 
 const FENCE_RE = /```forge:(bash|write|read|edit|grep|glob)\s*\n([\s\S]*?)```/
+// Same shape as FENCE_RE but with the global flag so matchAll can walk
+// every block in the reply, in order.
+const FENCE_RE_GLOBAL = /```forge:(bash|write|read|edit|grep|glob)\s*\n([\s\S]*?)```/g
 
-export function parseFirstToolBlock(stream: string): ParseOutcome {
-  const m = FENCE_RE.exec(stream)
-  if (!m) return { kind: 'none', text: stream }
-
+function buildOutcomeFromMatch(
+  m: RegExpMatchArray,
+  before: string,
+): ParseOutcome {
   const tag = m[1] as ToolKind
   const body = m[2] ?? ''
-  const before = stream.slice(0, m.index)
-
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
@@ -108,7 +112,6 @@ export function parseFirstToolBlock(stream: string): ParseOutcome {
       raw: m[0],
     }
   }
-
   const schema = SCHEMAS[tag]
   const result = schema.safeParse(parsed)
   if (!result.success) {
@@ -119,14 +122,38 @@ export function parseFirstToolBlock(stream: string): ParseOutcome {
       raw: m[0],
     }
   }
-
-  // Narrow to the right ParsedTool variant by tag — the schema guarantees
-  // the data shape matches.
   return {
     kind: 'tool',
     text: before,
     tool: { kind: tag, input: result.data, raw: m[0] } as ParsedTool,
   }
+}
+
+/**
+ * Parse every forge:* block in the reply, in source order. Each entry
+ * carries the prose chunk that PRECEDES it (so the runtime can surface
+ * the agent's narration before each tool call). Returns an empty array
+ * if the reply has no blocks at all.
+ */
+export function parseAllToolBlocks(stream: string): ParseOutcome[] {
+  const matches = [...stream.matchAll(FENCE_RE_GLOBAL)]
+  if (matches.length === 0) return []
+  const outcomes: ParseOutcome[] = []
+  let cursor = 0
+  for (const m of matches) {
+    const idx = m.index ?? 0
+    const before = stream.slice(cursor, idx)
+    outcomes.push(buildOutcomeFromMatch(m, before))
+    cursor = idx + m[0].length
+  }
+  return outcomes
+}
+
+export function parseFirstToolBlock(stream: string): ParseOutcome {
+  const m = FENCE_RE.exec(stream)
+  if (!m) return { kind: 'none', text: stream }
+  const before = stream.slice(0, m.index)
+  return buildOutcomeFromMatch(m, before)
 }
 
 function formatZodError(err: z.ZodError): string {

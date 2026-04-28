@@ -31,7 +31,7 @@ import {
 } from '@agent-forge/tools-core'
 import { type CoreMessage, streamText } from 'ai'
 import {
-  parseFirstToolBlock,
+  parseAllToolBlocks,
   renderBashResult,
   renderEditResult,
   renderGlobResult,
@@ -292,7 +292,7 @@ async function streamOneTurn(
 }
 
 async function executeToolBlock(
-  parsed: Extract<ReturnType<typeof parseFirstToolBlock>, { kind: 'tool' }>,
+  parsed: Extract<ReturnType<typeof parseAllToolBlocks>[number], { kind: 'tool' }>,
 ): Promise<string> {
   const tool = parsed.tool
   switch (tool.kind) {
@@ -347,25 +347,31 @@ async function main(): Promise<void> {
 
     if (!hasTools) break
 
-    const parsed = parseFirstToolBlock(reply)
-    if (parsed.kind === 'none') break
+    const parsed = parseAllToolBlocks(reply)
+    if (parsed.length === 0) break
 
-    // Record what the LLM just said (text + raw block) so the next turn
-    // sees it as a real assistant message.
+    // Record what the LLM just said (text + every raw block) so the
+    // next turn sees it as a real assistant message.
     messages.push({ role: 'assistant', content: reply })
 
-    let toolReply: string
-    if (parsed.kind === 'invalid') {
-      toolReply = renderInvalid(parsed.error)
-    } else {
-      toolReply = await executeToolBlock(parsed)
+    // Execute each block in source order. Each result is appended
+    // back as its own user message so the LLM gets the full
+    // sequence of (call, result, call, result, …) instead of a
+    // fused blob — that ordering matters for the model to
+    // attribute each result to its corresponding call.
+    for (const block of parsed) {
+      let toolReply: string
+      if (block.kind === 'invalid') {
+        toolReply = renderInvalid(block.error)
+      } else {
+        toolReply = await executeToolBlock(block)
+      }
+      // Mark tool output for the host TUI so it can render it
+      // inside the Mission Control card instead of mixing it
+      // with prose.
+      process.stdout.write(`\n[forge:tool]\n${toolReply}\n[/forge:tool]\n`)
+      messages.push({ role: 'user', content: toolReply })
     }
-
-    // Mark tool output for the host TUI so it can render it inside the
-    // Mission Control card instead of mixing it with prose.
-    process.stdout.write(`\n[forge:tool]\n${toolReply}\n[/forge:tool]\n`)
-
-    messages.push({ role: 'user', content: toolReply })
   }
 }
 
