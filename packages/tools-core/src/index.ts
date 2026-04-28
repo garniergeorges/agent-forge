@@ -30,6 +30,11 @@ export {
   type LlmProxyOptions,
 } from './llm-proxy.ts'
 
+export {
+  detectSandboxNetworkProfile,
+  type SandboxNetworkProfile,
+} from './sandbox-network.ts'
+
 // Runtime-side tools — used INSIDE the agent's container, sandboxed to
 // /workspace. Distinct from the host-side FileWrite above.
 export {

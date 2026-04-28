@@ -89,6 +89,37 @@ describe('hardeningFlags — relaxations from AGENT.md', () => {
   })
 })
 
+describe('hardeningFlags — bridge fallback profile', () => {
+  test('upgrades network=none to bridge when profile=bridge', () => {
+    // AGENT.md asks for none (the strict default), but the host
+    // can't expose a UDS bind-mount → fallback bridge is applied.
+    const cfg = applySandboxDefaults({ image: 'agent-forge/base:latest' })
+    const flags = hardeningFlags(cfg, 'bridge')
+    expect(flags).toContain('--network=bridge')
+    expect(flags).not.toContain('--network=none')
+  })
+
+  test('keeps explicit bridge under bridge profile', () => {
+    const cfg = applySandboxDefaults({
+      image: 'agent-forge/base:latest',
+      network: 'bridge',
+    })
+    const flags = hardeningFlags(cfg, 'bridge')
+    expect(flags).toContain('--network=bridge')
+  })
+
+  test('keeps explicit bridge under proxy profile too', () => {
+    // The author has explicitly opted into bridge ; we don't
+    // downgrade to none just because the proxy is available.
+    const cfg = applySandboxDefaults({
+      image: 'agent-forge/base:latest',
+      network: 'bridge',
+    })
+    const flags = hardeningFlags(cfg, 'proxy')
+    expect(flags).toContain('--network=bridge')
+  })
+})
+
 describe('hardeningFlags — invariants', () => {
   test('cap-drop and no-new-privileges are ALWAYS present', () => {
     // Even with the most permissive AGENT.md, these two stay on : we

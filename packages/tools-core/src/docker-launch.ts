@@ -36,6 +36,10 @@ import {
 } from '@agent-forge/core/types'
 import { FORGE_HOME } from './file-write.ts'
 import { type LlmProxyHandle, startLlmProxy } from './llm-proxy.ts'
+import {
+  type SandboxNetworkProfile,
+  detectSandboxNetworkProfile,
+} from './sandbox-network.ts'
 
 const log = getLogger('dockerLaunch')
 
@@ -75,19 +79,29 @@ function uniqueContainerName(agent: string): string {
   return `agent-forge-run-${agent}-${id}`
 }
 
-function containerEnv(): string[] {
-  // The container does NOT receive the real LLM endpoint nor the API
-  // key. Instead it gets the in-container Unix socket URL ; the host
-  // proxy injects credentials and forwards to the real upstream.
-  const out: string[] = ['-e', `FORGE_BASE_URL=${CONTAINER_BASE_URL}`]
-  // Model name is fine to share — it's not a secret and the runtime
-  // needs it to ask for the right model.
+function containerEnv(profile: SandboxNetworkProfile): string[] {
+  const out: string[] = []
   const model = process.env.FORGE_MODEL
   if (model) out.push('-e', `FORGE_MODEL=${model}`)
-  // The OpenAI SDK requires a non-empty API key field even when the
-  // upstream doesn't authenticate. Use a sentinel that's obviously
-  // not a credential.
-  out.push('-e', 'FORGE_API_KEY=via-proxy')
+
+  if (profile === 'proxy') {
+    // The container does NOT receive the real LLM endpoint nor the
+    // API key. Instead it gets the in-container Unix socket URL ;
+    // the host proxy injects credentials and forwards.
+    out.push('-e', `FORGE_BASE_URL=${CONTAINER_BASE_URL}`)
+    // The OpenAI SDK requires a non-empty API key. Sentinel that's
+    // obviously not a credential.
+    out.push('-e', 'FORGE_API_KEY=via-proxy')
+  } else {
+    // Bridge fallback : container talks to the upstream directly.
+    // We HAVE to forward the real key here — there's no proxy in
+    // the path. The redaction layer in the logger keeps it out of
+    // every log line.
+    const upstreamBase = process.env.FORGE_BASE_URL
+    const upstreamKey = process.env.FORGE_API_KEY
+    if (upstreamBase) out.push('-e', `FORGE_BASE_URL=${upstreamBase}`)
+    if (upstreamKey) out.push('-e', `FORGE_API_KEY=${upstreamKey}`)
+  }
   return out
 }
 
@@ -119,13 +133,29 @@ function redactSecretsInArgs(args: string[]): string[] {
 // declared in AGENT.md. These come BEFORE the image name in the
 // args array, after the standard --name / -i / -v block.
 //
+// `networkProfile` overrides AGENT.md's `network` field when the host
+// can't ship a Unix socket through a bind-mount (Docker Desktop on
+// macOS — the FUSE layer doesn't pass UDS through). On those hosts
+// we fall back to network=bridge so the runtime can talk to the
+// upstream directly. Other hardening (cap-drop, no-new-privileges,
+// non-root user, read-only root, resource caps) stays on.
+//
 // Exported (alongside resolveSandboxFromAgentMd) so tests can verify
 // the translation without spawning an actual container.
-export function hardeningFlags(cfg: AppliedSandboxConfig): string[] {
+export function hardeningFlags(
+  cfg: AppliedSandboxConfig,
+  networkProfile: SandboxNetworkProfile = 'proxy',
+): string[] {
+  // Resolve the actual --network flag : when AGENT.md asks for none
+  // but we need a fallback bridge to reach the LLM, the profile wins.
+  const effectiveNetwork =
+    cfg.network === 'none' && networkProfile === 'bridge'
+      ? 'bridge'
+      : cfg.network
   const out: string[] = [
     '--cap-drop=ALL',
     '--security-opt=no-new-privileges',
-    `--network=${cfg.network}`,
+    `--network=${effectiveNetwork}`,
     `--user=${cfg.user}`,
     `--memory=${cfg.memory}`,
     `--cpus=${cfg.cpus.toString()}`,
@@ -222,32 +252,41 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
 
     mkdirSync(workspaceHostDir, { recursive: true })
 
-    // Start the per-run LLM proxy on a Unix socket. The socket lives
-    // on the host under ~/.agent-forge/run/<container>/llm.sock and
-    // is bind-mounted at /run/forge/llm.sock inside the container.
+    // Pick the network profile : 'proxy' (network=none + UDS proxy)
+    // when supported, 'bridge' when the host can't ship a Unix
+    // socket through a bind-mount (Docker Desktop on macOS).
+    const networkProfile: SandboxNetworkProfile =
+      await detectSandboxNetworkProfile()
+
+    // Proxy profile : start the per-run LLM proxy on a Unix socket
+    // bind-mounted into the container. Bridge profile : skip the
+    // proxy, the runtime talks to the upstream directly.
     const socketHostDir = join(FORGE_HOME, 'run', containerName)
     const socketHostPath = join(socketHostDir, 'llm.sock')
-    const upstreamBase = process.env.FORGE_BASE_URL ?? 'https://api.mistral.ai/v1'
-    const upstreamKey = process.env.FORGE_API_KEY ?? ''
     let proxy: LlmProxyHandle | null = null
-    try {
-      proxy = await startLlmProxy({
-        socketPath: socketHostPath,
-        upstreamBaseUrl: upstreamBase,
-        apiKey: upstreamKey,
-      })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      log.error('proxy start failed', { error: msg })
-      yield { type: 'error', error: `cannot start LLM proxy : ${msg}` }
-      return
+    if (networkProfile === 'proxy') {
+      const upstreamBase = process.env.FORGE_BASE_URL ?? 'https://api.mistral.ai/v1'
+      const upstreamKey = process.env.FORGE_API_KEY ?? ''
+      try {
+        proxy = await startLlmProxy({
+          socketPath: socketHostPath,
+          upstreamBaseUrl: upstreamBase,
+          apiKey: upstreamKey,
+        })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        log.error('proxy start failed', { error: msg })
+        yield { type: 'error', error: `cannot start LLM proxy : ${msg}` }
+        return
+      }
     }
 
     log.info('launching', {
       agent: input.agent,
       containerName,
       workspaceHostDir,
-      socketHostPath,
+      networkProfile,
+      socketHostPath: networkProfile === 'proxy' ? socketHostPath : null,
       sandboxCfg,
     })
 
@@ -265,15 +304,16 @@ export function launchAgent(input: DockerLaunchInput): LaunchHandle {
       `${RUNTIME_DIST_FROM_TOOLS}:/runtime:ro`,
       '-v',
       `${workspaceHostDir}:/workspace`,
-      // The LLM proxy socket : the host file is bind-mounted at the
-      // container path the runtime expects. The directory is mounted
-      // (not the file) so the socket inode resolves correctly.
-      '-v',
-      `${socketHostDir}:${dirname(CONTAINER_SOCKET_PATH)}`,
+      // The LLM proxy socket : only mounted in proxy profile. We
+      // mount the directory (not the file) so the socket inode
+      // resolves correctly inside the container.
+      ...(networkProfile === 'proxy'
+        ? ['-v', `${socketHostDir}:${dirname(CONTAINER_SOCKET_PATH)}`]
+        : []),
       '-w',
       '/workspace',
-      ...hardeningFlags(sandboxCfg),
-      ...containerEnv(),
+      ...hardeningFlags(sandboxCfg, networkProfile),
+      ...containerEnv(networkProfile),
       sandboxCfg.image,
       'node',
       '/runtime/runtime.mjs',

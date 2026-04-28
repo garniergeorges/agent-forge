@@ -203,6 +203,17 @@ La skill `scaffold-and-run` est livrée par défaut : elle se déclenche sur des
 - `↑↓ / PgUp / PgDn / g / G` — scroll dans la vue détail
 - `Ctrl+E` — retour live dans le transcript
 
+## Réseau de la sandbox
+
+Deux profils, choisis automatiquement au premier run :
+
+- **proxy** — `--network=none` dans le container ; le host fait tourner un proxy LLM par run sur une socket Unix bind-mountée à `/run/forge/llm.sock`. La clé API n'entre jamais dans le container. **C'est le profil strict que l'on veut.**
+- **bridge** — `--network=bridge` ; le runtime parle directement à l'upstream. La clé API doit être passée en env du container. Moins idéal, mais c'est la seule chose qui marche sous Docker Desktop sur macOS (la couche FUSE des bind-mounts ne supporte pas les sockets Unix).
+
+Le détecteur fait un test au premier run avec un container jetable. Sous Linux, profil `proxy` ; sous Docker Desktop Mac, profil `bridge`. Override possible avec `FORGE_SANDBOX_NETWORK=proxy|bridge`.
+
+Les autres flags de hardening restent actifs quel que soit le profil : `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, `--user=agent`, caps mémoire / cpus / pids.
+
 ## Debug
 
 La TUI possède stdout, donc pas de `console.log` possible — Forge écrit dans un fichier de log structuré.

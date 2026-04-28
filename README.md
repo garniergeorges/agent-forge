@@ -203,6 +203,17 @@ Built-in `scaffold-and-run` ships today : it triggers on words like `audite`, `t
 - `↑↓ / PgUp / PgDn / g / G` — scroll inside the detail view
 - `Ctrl+E` — return the chat transcript to live mode
 
+## Sandbox networking
+
+Two profiles, picked automatically at first run :
+
+- **proxy** — `--network=none` inside the container ; the host runs a per-run LLM proxy on a Unix socket bind-mounted at `/run/forge/llm.sock`. The container never sees the API key. **This is the strict, secure profile we want.**
+- **bridge** — `--network=bridge` ; the runtime talks to the upstream directly. The API key has to be forwarded into the container env. Less ideal, but it's the only thing that works under Docker Desktop on macOS (the FUSE bind-mount layer doesn't support Unix sockets).
+
+The detector probes once at startup with a tiny throwaway container. Runs on Linux pick `proxy` ; runs on Docker Desktop Mac pick `bridge`. Override with `FORGE_SANDBOX_NETWORK=proxy|bridge`.
+
+The other hardening flags stay on regardless of profile : `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, `--user=agent`, memory / cpus / pids caps.
+
 ## Debugging
 
 The TUI owns stdout, so we never `console.log` — instead Forge ships a structured file logger.
